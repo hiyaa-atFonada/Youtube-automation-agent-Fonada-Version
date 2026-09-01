@@ -1,4 +1,4 @@
-# YouTube Automation Agent - ECGHuNZSECqTXabaLjkVrTEnguiNZLkKF1qi8oBGpump
+# YouTube Automation Agent - FonadaLabs Version
 
 **The open-source AI agent that runs a YouTube channel end to end.**
 
