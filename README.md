@@ -12,9 +12,9 @@ Research topics → write scripts → generate narration and visuals → assembl
 
 Recent operator work on top of **v2.6.0**:
 
-- **Speaking style:** a dedicated dashboard page. Paste up to 5 YouTube links; Fonada ASR transcribes them and the next AI scripts follow that delivery. This does not clone a voice.
+- **Speaking style:** a dedicated dashboard page. Paste up to 5 YouTube links; FonadaLabs ASR transcribes them and the next AI scripts follow that delivery. This does not clone a voice.
 - **YouTube from the dashboard:** save a Google OAuth client and sign in under **Channel setup**. Generation still works without YouTube.
-- **Fonada narration:** Klone V2 with a `share_id`, or a named V1 voice. Spoken language (Hindi, English, Tamil, Telugu) is a dashboard control, not a hidden `.env` default.
+- **FonadaLabs narration:** Klone V2 with a `share_id`, or a named V1 voice. Spoken language (Hindi, English, Tamil, Telugu) is a dashboard control, not a hidden `.env` default.
 - **Video length matches narration:** slideshows are timed from the real TTS audio. Mux does not cut the track with FFmpeg `-shortest`.
 - **Safer open-source checkout:** `.env`, OAuth tokens, SQLite, and generated media are gitignored. Copy `.env.example` to `.env`.
 
@@ -41,7 +41,7 @@ Open [http://localhost:3456](http://localhost:3456). The walkthrough explains ea
 
 Already set up? Put keys in `.env`, then `npm start`. `npm run setup` is a shorter classic flow. Every setting is documented in [`.env.example`](.env.example).
 
-YouTube OAuth is **not** an API key in `.env`. Connect it in the dashboard. Full walkthrough: [docs/youtube-oauth.md](docs/youtube-oauth.md). Fonada keys and share ids: [docs/fonada-credentials.md](docs/fonada-credentials.md).
+YouTube OAuth is **not** an API key in `.env`. Connect it in the dashboard. Full walkthrough: [docs/youtube-oauth.md](docs/youtube-oauth.md). FonadaLabs keys and share ids: [docs/fonada-credentials.md](docs/fonada-credentials.md).
 
 ### What you need
 
@@ -49,7 +49,7 @@ YouTube OAuth is **not** an API key in `.env`. Connect it in the dashboard. Full
 - At least one AI text provider key
 - FFmpeg (installed automatically via `ffmpeg-static`, or set `FFMPEG_PATH`)
 - Optional for upload: a Google account and YouTube Data API OAuth client
-- Optional for Fonada TTS / speaking style: a [Fonada](https://fonada.ai) API key; `yt-dlp` on `PATH` (or `YT_DLP_PATH`) to pull audio from YouTube links
+- Optional for FonadaLabs TTS / speaking style: a [FonadaLabs](https://fonada.ai) API key; `yt-dlp` on `PATH` (or `YT_DLP_PATH`) to pull audio from YouTube links
 
 Gemini offers free access for supported text and TTS. Gemini AI image generation currently needs paid-tier access. Without an image provider, Lumen can assemble gradient-based visuals.
 
@@ -77,7 +77,7 @@ Guardrails on this page apply to every later job:
 - Channel name, goal, audience, brand voice, CTA, visual direction
 - Default format (explainer, tutorial, list, review, story)
 - Spoken language: Hindi, English, Tamil, Telugu
-- Voice or Fonada `share_id` (6–12 alphanumeric → Klone V2; a name → V1; blank → `FONADA_SHARE_ID` in `.env`)
+- Voice or FonadaLabs `share_id` (6–12 alphanumeric → Klone V2; a name → V1; blank → `FONADA_SHARE_ID` in `.env`)
 - Timezone used for schedule display and `datetime-local` (India IST is `Asia/Kolkata`)
 - Blocked topics (quality review rejects matches)
 - Require approval before scheduling
@@ -122,9 +122,9 @@ CLI: `npm run test:fonada-asr` with links and `FONADA_API_KEY` set.
 
 ## Voice and video assembly
 
-Fonada API key, `share_id` vs voice name, and ASR: **[docs/fonada-credentials.md](docs/fonada-credentials.md)**.
+FonadaLabs API key, `share_id` vs voice name, and ASR: **[docs/fonada-credentials.md](docs/fonada-credentials.md)**.
 
-Narration order: **Fonada** (Klone V2 or V1) → Gemini TTS → OpenAI TTS → ElevenLabs → Azure → silent/simulated.
+Narration order: **FonadaLabs** (Klone V2 or V1) → Gemini TTS → OpenAI TTS → ElevenLabs → Azure → silent/simulated.
 
 Slideshows:
 
@@ -179,7 +179,7 @@ graph TD
     O[Autonomous Channel Operator] --> A[Research and Editorial Plan]
     A --> B[Content Strategy Agent]
     B --> C[Script Writer Agent]
-    S[Speaking Style / Fonada ASR] --> C
+    S[Speaking Style / FonadaLabs ASR] --> C
     C --> D[Thumbnail Designer Agent]
     C --> E[SEO Optimizer Agent]
     D --> F[Production Management Agent]
@@ -229,13 +229,13 @@ graph LR
 | **MiMo (Xiaomi)** | MiMo V2.5 Pro, V2.5 | `api.xiaomimimo.com/v1` | provider pricing |
 | **GLM (Zhipu AI)** | GLM-5.3, 5.2, 5.1 | `api.z.ai/api/paas/v4/` | provider pricing |
 
-Also used when configured: Fonada (TTS + ASR), Gemini images/TTS, ElevenLabs, Azure Speech, Replicate video, Anthropic-compatible endpoints, Ollama / any OpenAI-compatible URL.
+Also used when configured: FonadaLabs (TTS + ASR), Gemini images/TTS, ElevenLabs, Azure Speech, Replicate video, Anthropic-compatible endpoints, Ollama / any OpenAI-compatible URL.
 
 ## Configuration
 
 | Guide | Contents |
 | --- | --- |
-| [docs/fonada-credentials.md](docs/fonada-credentials.md) | Fonada API key, Klone `share_id`, V1 voices, ASR |
+| [docs/fonada-credentials.md](docs/fonada-credentials.md) | FonadaLabs API key, Klone `share_id`, V1 voices, ASR |
 | [docs/youtube-oauth.md](docs/youtube-oauth.md) | Google Cloud project, consent screen, Desktop client, dashboard connect |
 | [`.env.example`](.env.example) | Every environment variable |
 
@@ -252,7 +252,7 @@ cp .env.example .env
 | App | `PORT`, `NODE_ENV`, `LOG_LEVEL`, `API_KEY`, `MAX_CONCURRENT_JOBS` |
 | Channel | `CHANNEL_NAME`, `CHANNEL_TIMEZONE`, `YOUTUBE_REGION`, `DEFAULT_PRIVACY_STATUS` |
 | Text | `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `MOONSHOT_API_KEY`, `MIMO_API_KEY`, `GLM_API_KEY` |
-| Fonada / style | `FONADA_API_KEY`, `FONADA_SHARE_ID`, `FONADA_VOICE`, `FONADA_TTS_MODEL`, `SPEAKING_STYLE_MAX_MINUTES` |
+| FonadaLabs / style | `FONADA_API_KEY`, `FONADA_SHARE_ID`, `FONADA_VOICE`, `FONADA_TTS_MODEL`, `SPEAKING_STYLE_MAX_MINUTES` |
 | Optional media | `FFMPEG_PATH`, `YT_DLP_PATH`, `YT_DLP_COOKIES`, Gemini/ElevenLabs/Replicate/Azure keys |
 
 Do not put Google Client ID/Secret in `.env`. Use Channel setup or `config/credentials.json`.
@@ -267,7 +267,7 @@ Do not put Google Client ID/Secret in `.env`. Use Channel setup or `config/crede
 | Kimi | [platform.kimi.ai](https://platform.kimi.ai) | `MOONSHOT_API_KEY` |
 | MiMo | [mimo.mi.com](https://mimo.mi.com) | `MIMO_API_KEY` |
 | GLM | [z.ai](https://z.ai) | `GLM_API_KEY` |
-| Fonada | [fonada.ai](https://fonada.ai) | `FONADA_API_KEY` |
+| FonadaLabs | [fonada.ai](https://fonada.ai) | `FONADA_API_KEY` |
 
 ### Activation measurement and privacy
 
@@ -361,7 +361,7 @@ curl -X POST http://localhost:3456/api/content/:contentId/approve \
 flowchart LR
     subgraph TTS["Audio"]
         direction TB
-        FO[Fonada Klone / V1] -.->|fallback| GE[Gemini TTS]
+        FO[FonadaLabs Klone / V1] -.->|fallback| GE[Gemini TTS]
         GE -.->|fallback| OA[OpenAI TTS]
         OA -.->|fallback| EL[ElevenLabs]
         EL -.->|fallback| SIM1[Silent / simulated]
@@ -393,11 +393,11 @@ youtube-automation-agent/
 ├── agents/           # one file per pipeline agent
 ├── config/           # credentials.example.json; local credentials.json + tokens.json are gitignored
 ├── dashboard/        # operator console (HTML/CSS/JS)
-├── docs/             # Fonada and YouTube OAuth setup guides
+├── docs/             # FonadaLabs and YouTube OAuth setup guides
 ├── database/         # SQLite schema and access
 ├── data/             # generated media and DB (gitignored except .gitkeep)
 ├── schedules/        # cron automation
-├── scripts/          # Fonada TTS/ASR tests, growth snapshots
+├── scripts/          # FonadaLabs TTS/ASR tests, growth snapshots
 ├── utils/            # TTS, ASR, FFmpeg, speaking style, credentials
 ├── .env.example      # copy to .env
 ├── .github/          # CI
@@ -415,7 +415,7 @@ Do not commit `.env`, `config/credentials.json`, `config/tokens.json`, `*.db`, o
 | Video marked `simulated` | Read the startup capability check; a key or FFmpeg is missing |
 | Dashboard **connection refused** | Run `npm start` in this folder; open `http://localhost:3456` |
 | `403 access_denied` on Google sign-in | Add your Gmail as an OAuth **test user** |
-| Speaking style stuck on Learning | Check `yt-dlp`, network, and Fonada key; a stuck job times out and can be retried |
+| Speaking style stuck on Learning | Check `yt-dlp`, network, and FonadaLabs key; a stuck job times out and can be retried |
 | ASR text is English in Hindi script | Set ASR language to the language actually spoken |
 | Next scripts ignore speaking style | Confirm status is **Learned**, the toggle is on, and the job used the AI script writer |
 | Publish queue runs but YouTube says **invalid scheduled publishing time** | The slot is already past; YouTube rejects `publishAt` in the past. Wait for the next 15-minute tick or upload without a past schedule |
@@ -499,7 +499,7 @@ MIT — [LICENSE](LICENSE).
 - [OpenRouter](https://openrouter.ai/) — unified multi-model API
 - [Google](https://ai.google.dev/) — Gemini text, image, TTS
 - [Google Cloud](https://console.cloud.google.com/) — YouTube Data API
-- [Fonada](https://fonada.ai/) — multilingual TTS and ASR
+- [FonadaLabs](https://fonada.ai/) — multilingual TTS and ASR
 - [Moonshot AI](https://www.moonshot.ai/) — Kimi
 - [Xiaomi](https://mimo.mi.com/) — MiMo
 - [Zhipu AI](https://z.ai/) — GLM
