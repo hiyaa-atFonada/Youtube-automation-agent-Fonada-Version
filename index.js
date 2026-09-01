@@ -13,13 +13,43 @@ const { SEOOptimizerAgent } = require('./agents/seo-optimizer-agent');
 const { ProductionManagementAgent } = require('./agents/production-management-agent');
 const { PublishingSchedulingAgent } = require('./agents/publishing-scheduling-agent');
 const { AnalyticsOptimizationAgent } = require('./agents/analytics-optimization-agent');
+const {
+  CONTENT_LANGUAGE_CHOICES,
+  isPlausibleVoiceId,
+  listFonadaVoices,
+  normalizeContentLanguage,
+  normalizeFonadaVoice,
+  parseTypedVoice
+} = require('./utils/fonada-tts');
 const { DailyAutomation } = require('./schedules/daily-automation');
 const { OperatorService } = require('./utils/operator-service');
 const { AutonomousChannelOperator } = require('./utils/autonomous-channel-operator');
 const { ActivationMetrics } = require('./utils/activation-metrics');
 const { AnonymousTelemetry } = require('./utils/anonymous-telemetry');
 const { ProductionReadinessService } = require('./utils/production-readiness-service');
+const { SpeakingStyleService } = require('./utils/speaking-style-service');
 const { version } = require('./package.json');
+
+function normalizeChannelTimezone(value) {
+  const raw = String(value || '').trim();
+  const key = raw.toLowerCase().replace(/[_\s-]+/g, '');
+  const aliases = {
+    indian: 'Asia/Kolkata',
+    india: 'Asia/Kolkata',
+    ist: 'Asia/Kolkata',
+    kolkata: 'Asia/Kolkata',
+    calcutta: 'Asia/Kolkata',
+    'asia/kolkata': 'Asia/Kolkata',
+    'asia/calcutta': 'Asia/Kolkata'
+  };
+  if (aliases[key]) return aliases[key];
+  try {
+    Intl.DateTimeFormat('en-IN', { timeZone: raw }).format(new Date());
+    return raw;
+  } catch (_error) {
+    return 'Asia/Kolkata';
+  }
+}
 const chalk = require('chalk');
 
 class YouTubeAutomationAgent {
@@ -37,6 +67,7 @@ class YouTubeAutomationAgent {
     this.telemetry = null;
     this.readiness = null;
     this.setupRequired = false;
+    this.speakingStyleJob = { status: 'idle' };
   }
 
   async initialize() {
@@ -138,18 +169,19 @@ class YouTubeAutomationAgent {
     const hasGemini = Boolean(creds.gemini?.apiKey || process.env.GEMINI_API_KEY);
     const hasImages = Boolean(creds.openai?.apiKey || process.env.OPENAI_API_KEY || hasGemini);
     const hasTTS = Boolean(
+      creds.fonada?.apiKey || process.env.FONADA_API_KEY ||
       creds.openai?.apiKey || process.env.OPENAI_API_KEY ||
       creds.elevenLabs?.apiKey || process.env.ELEVENLABS_API_KEY ||
       creds.azureSpeech?.subscriptionKey || process.env.AZURE_SPEECH_KEY ||
       hasGemini
     );
     const hasFFmpeg = await checkFFmpeg();
-    const hasUpload = Boolean(creds.youtube && this.credentials.tokens?.youtube);
+    const hasUpload = this.credentials.hasYouTubeUpload();
 
     const capabilities = [
       { name: 'Script & strategy generation', ok: hasText, hint: 'configure an AI provider (npm run credentials:setup)' },
       { name: 'Image generation (visuals/thumbnails)', ok: hasImages, hint: 'requires an OpenAI or Gemini API key — otherwise gradient slides are used' },
-      { name: 'Voice narration (TTS)', ok: hasTTS, hint: 'configure OpenAI, Gemini, ElevenLabs, or Azure Speech — otherwise videos are silent' },
+      { name: 'Voice narration (TTS)', ok: hasTTS, hint: 'configure Fonada Labs (FONADA_API_KEY), Gemini, or OpenAI — otherwise videos are silent' },
       { name: 'Video assembly (FFmpeg)', ok: hasFFmpeg, hint: ffmpegInstallHint() },
       { name: 'YouTube upload', ok: hasUpload, hint: 'run: npm run credentials:setup' }
     ];
@@ -184,6 +216,26 @@ class YouTubeAutomationAgent {
     };
   }
 
+  async getFonadaVoiceCatalog() {
+    const creds = this.credentials?.credentials?.fonada || {};
+    return listFonadaVoices({
+      apiKey: creds.apiKey || process.env.FONADA_API_KEY,
+      shareId: creds.shareId || process.env.FONADA_SHARE_ID
+    });
+  }
+
+  async resolveSelectedVoice(value) {
+    if (!value) return null;
+    const catalog = await this.getFonadaVoiceCatalog();
+    const resolved = normalizeFonadaVoice(value, catalog);
+    if (resolved) return resolved;
+    const parsed = parseTypedVoice(value);
+    if (parsed?.source === 'clone' && parsed.id === 'clone') {
+      parsed.voiceId = process.env.FONADA_SHARE_ID || parsed.voiceId;
+    }
+    return parsed;
+  }
+
   validateGenerateRequestBody(body = {}) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return { valid: false, status: 400, error: 'Request body must be a JSON object' };
@@ -193,6 +245,8 @@ class YouTubeAutomationAgent {
       topic: null,
       style: null,
       length: typeof body.length === 'string' ? body.length.toLowerCase() : 'medium',
+      language: null,
+      voice: null,
       strategyContext: null
     };
 
@@ -239,6 +293,22 @@ class YouTubeAutomationAgent {
 
     if (!['short', 'medium', 'long'].includes(value.length)) {
       return { valid: false, status: 400, error: 'length must be short, medium, or long' };
+    }
+
+    if (body.language !== undefined && body.language !== null && String(body.language).trim()) {
+      const language = normalizeContentLanguage(body.language);
+      if (!language) {
+        return { valid: false, status: 400, error: 'language must be a Fonada TTS language' };
+      }
+      value.language = language.iso;
+    }
+
+    if (body.voice !== undefined && body.voice !== null && String(body.voice).trim()) {
+      const voice = String(body.voice).trim();
+      if (!isPlausibleVoiceId(voice)) {
+        return { valid: false, status: 400, error: 'voice must be a Fonada catalog, V1, or cloned voice id' };
+      }
+      value.voice = voice;
     }
 
     if (body.strategyContext !== undefined && body.strategyContext !== null) {
@@ -289,11 +359,13 @@ class YouTubeAutomationAgent {
     };
     const defaultFormat = text('defaultFormat', current.default_format || 'explainer', 20).toLowerCase();
     const defaultLength = text('defaultLength', current.default_length || 'medium', 20).toLowerCase();
+    const defaultLanguage = normalizeContentLanguage(body.defaultLanguage ?? current.default_language ?? 'hi');
     const status = text('status', current.status || 'draft', 20).toLowerCase();
     if (!['explainer', 'tutorial', 'list', 'review', 'story'].includes(defaultFormat)) {
       throw new Error('defaultFormat is not supported');
     }
     if (!['short', 'medium', 'long'].includes(defaultLength)) throw new Error('defaultLength is not supported');
+    if (!defaultLanguage) throw new Error('defaultLanguage must be a Fonada TTS language');
     if (!['draft', 'active', 'paused'].includes(status)) throw new Error('status must be draft, active, or paused');
 
     return {
@@ -305,6 +377,7 @@ class YouTubeAutomationAgent {
       videosPerRun: integer('videosPerRun', current.videos_per_run || 1, 1, 5),
       defaultFormat,
       defaultLength,
+      defaultLanguage: defaultLanguage.iso,
       successMetric: text('successMetric', current.success_metric, 300),
       constraints: text('constraints', current.constraints, 2000),
       status
@@ -312,7 +385,13 @@ class YouTubeAutomationAgent {
   }
   setupAPI() {
     this.app.use(express.json({ limit: '1mb' }));
-    this.app.use(express.static(path.join(__dirname, 'dashboard')));
+    this.app.use(express.static(path.join(__dirname, 'dashboard'), {
+      etag: false,
+      lastModified: false,
+      setHeaders: res => {
+        res.set('Cache-Control', 'no-store');
+      }
+    }));
 
     if (!process.env.API_KEY) {
       this.logger.warn('API_KEY is not set; mutating API routes are unprotected');
@@ -320,6 +399,7 @@ class YouTubeAutomationAgent {
     
     // Main dashboard route
     this.app.get('/', (req, res) => {
+      res.set('Cache-Control', 'no-store');
       res.sendFile(path.join(__dirname, 'dashboard', 'index.html'));
     });
     
@@ -329,6 +409,7 @@ class YouTubeAutomationAgent {
         status: this.setupRequired ? 'setup_required' : 'healthy',
         initialized: this.isInitialized,
         setupRequired: this.setupRequired,
+        youtubeReady: Boolean(this.credentials?.hasYouTubeUpload?.()),
         agents: Object.keys(this.agents),
         uptime: process.uptime(),
         timestamp: new Date().toISOString()
@@ -346,8 +427,8 @@ class YouTubeAutomationAgent {
           return res.status(validation.status).json({ success: false, error: validation.error });
         }
 
-        const { topic, style, length } = validation.value;
-        const result = await this.startGenerationJob({ topic, style, length, source: 'manual' });
+        const { topic, style, length, language, voice } = validation.value;
+        const result = await this.startGenerationJob({ topic, style, length, language, voice, source: 'manual' });
         res.status(202).json({ success: true, result });
       } catch (error) {
         res.status(error.status || 500).json({ success: false, error: error.message });
@@ -379,7 +460,13 @@ class YouTubeAutomationAgent {
     // Manual publish
     this.app.post('/publish/:contentId', this.requireAPIKey(), async (req, res) => {
       try {
-        if (!this.agents.publishing) return res.status(503).json({ success: false, error: 'YouTube publishing is not configured' });
+        if (!this.agents.publishing) return res.status(503).json({ success: false, error: 'Publishing agent is not initialized' });
+        if (!this.credentials.hasYouTubeUpload()) {
+          return res.status(503).json({
+            success: false,
+            error: 'YouTube is not connected. Generate and review videos locally, then run npm run walkthrough to connect YouTube before uploading.'
+          });
+        }
         const { contentId } = req.params;
         const bundle = await this.db.getProductionBundle(contentId);
         if (!bundle || bundle.review_status !== 'approved') {
@@ -400,7 +487,7 @@ class YouTubeAutomationAgent {
 
     this.app.get('/api/dashboard', async (_req, res) => {
       try {
-        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation, channelStrategy, operatorRuns, readiness] = await Promise.all([
+        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation, channelStrategy, operatorRuns, readiness, speakingStyle] = await Promise.all([
           this.db.getStats(),
           this.db.listGenerationJobs(20),
           this.db.getPipelineOverview(50),
@@ -423,12 +510,14 @@ class YouTubeAutomationAgent {
           this.db.listOperatorRuns(10),
           this.readiness
             ? this.readiness.getSummary()
-            : Promise.resolve({ status: 'unverified', stale: false, blockingFailures: [], checks: [] })
+            : Promise.resolve({ status: 'unverified', stale: false, blockingFailures: [], checks: [] }),
+          this.getSpeakingStyleDashboard()
         ]);
         if (this.telemetry) void this.telemetry.sync(activation);
         res.json({
           stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation,
-          channelStrategy, operatorRuns, readiness,
+          channelStrategy, operatorRuns, readiness, speakingStyle,
+          spokenLanguages: CONTENT_LANGUAGE_CHOICES,
           system: {
             initialized: this.isInitialized,
             setupRequired: this.setupRequired,
@@ -436,8 +525,10 @@ class YouTubeAutomationAgent {
             activeJobs: this.activeJobs.size,
             automationPaused: this.scheduler ? !this.scheduler.isEnabled : true,
             agents: Object.keys(this.agents),
+            youtubeReady: Boolean(this.credentials?.hasYouTubeUpload?.()),
             autonomousRunning: Boolean(await this.db.getActiveOperatorRun())
-          }
+          },
+          youtube: this.getYouTubeDashboardStatus()
         });
       } catch (error) {
         res.status(500).json({ error: error.message });
@@ -532,6 +623,8 @@ class YouTubeAutomationAgent {
         topic: bundle.strategy.topic || bundle.editorData.title || null,
         style: bundle.strategy.requestedStyle || bundle.strategy.contentType || null,
         length: bundle.strategy.requestedLengthKey || 'medium',
+        language: bundle.strategy.language || bundle.script?.language || null,
+        voice: bundle.strategy.voice || null,
         source: 'retry'
       });
       return res.status(202).json({ success: true, result: job });
@@ -563,6 +656,117 @@ class YouTubeAutomationAgent {
         return res.sendFile(resolved);
       } catch (_error) {
         return res.status(404).json({ error: 'Asset not found' });
+      }
+    });
+
+    this.app.get('/api/speaking-style', async (_req, res) => {
+      try {
+        return res.json(await this.getSpeakingStyleDashboard());
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
+      }
+    });
+
+    this.app.post('/api/speaking-style/learn', protect, async (req, res) => {
+      try {
+        if (this.speakingStyleJob?.status === 'running' && !this.isSpeakingStyleJobStale()) {
+          return res.status(409).json({
+            error: 'A speaking-style job is already running. Wait for it to finish, or try again in a few minutes if it is stuck.',
+            ...this.speakingStyleJob
+          });
+        }
+        const urls = this.parseSpeakingStyleUrls(req.body || {});
+        const language = normalizeContentLanguage(
+          req.body.language || (await this.db.getChannelProfile())?.default_language
+        );
+        this.startSpeakingStyleJob(urls, { language: language?.iso || language?.name });
+        return res.json({ success: true, ...this.speakingStyleJob });
+      } catch (error) {
+        return res.status(400).json({ error: error.message });
+      }
+    });
+
+    this.app.put('/api/speaking-style', protect, async (req, res) => {
+      try {
+        const enabled = req.body?.enabled !== false && req.body?.enabled !== 'false';
+        await this.db.setSetting('speaking_style_enabled', enabled ? 'true' : 'false', 'Use learned speaking style in script writing');
+        return res.json({ success: true, ...(await this.getSpeakingStyleDashboard()) });
+      } catch (error) {
+        return res.status(400).json({ error: error.message });
+      }
+    });
+
+    this.app.get('/api/youtube', async (_req, res) => {
+      try {
+        const status = this.getYouTubeDashboardStatus();
+        if (status.connected && this.credentials?.getYouTubeChannelInfo) {
+          status.channel = await this.credentials.getYouTubeChannelInfo();
+        }
+        return res.json(status);
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
+      }
+    });
+
+    this.app.put('/api/youtube', protect, async (req, res) => {
+      try {
+        if (!this.credentials?.saveYouTubeClient) {
+          return res.status(503).json({ error: 'Credential store is not available' });
+        }
+        const clientId = String(req.body?.clientId || '').trim();
+        const clientSecret = String(req.body?.clientSecret || '').trim();
+        if (!/\.apps\.googleusercontent\.com$/.test(clientId)) {
+          return res.status(400).json({ error: 'Paste a Google OAuth Client ID ending in .apps.googleusercontent.com' });
+        }
+        const status = await this.credentials.saveYouTubeClient({
+          clientId,
+          clientSecret,
+          redirectUri: this.youtubeRedirectUri()
+        });
+        return res.json({ success: true, ...status });
+      } catch (error) {
+        return res.status(400).json({ error: error.message });
+      }
+    });
+
+    this.app.post('/api/youtube/connect', protect, async (_req, res) => {
+      try {
+        if (!this.credentials?.createYouTubeAuthUrl) {
+          return res.status(503).json({ error: 'Credential store is not available' });
+        }
+        const authUrl = this.credentials.createYouTubeAuthUrl(this.youtubeRedirectUri());
+        return res.json({ success: true, authUrl });
+      } catch (error) {
+        return res.status(400).json({ error: error.message });
+      }
+    });
+
+    this.app.get('/api/youtube/callback', async (req, res) => {
+      const code = String(req.query.code || '').trim();
+      const oauthError = String(req.query.error || '').trim();
+      if (oauthError) {
+        return res.status(400).send(this.youtubeOauthPage('YouTube sign-in was cancelled', oauthError, false));
+      }
+      if (!code) {
+        return res.status(400).send(this.youtubeOauthPage('Missing authorization code', 'Return to Channel setup and connect again.', false));
+      }
+      try {
+        await this.credentials.exchangeYouTubeCode(code, this.youtubeRedirectUri());
+        return res.send(this.youtubeOauthPage('YouTube connected', 'You can close this tab and return to Channel setup.', true));
+      } catch (error) {
+        return res.status(400).send(this.youtubeOauthPage('YouTube sign-in failed', error.message, false));
+      }
+    });
+
+    this.app.post('/api/youtube/disconnect', protect, async (_req, res) => {
+      try {
+        if (!this.credentials?.disconnectYouTube) {
+          return res.status(503).json({ error: 'Credential store is not available' });
+        }
+        const status = await this.credentials.disconnectYouTube();
+        return res.json({ success: true, ...status });
+      } catch (error) {
+        return res.status(400).json({ error: error.message });
       }
     });
 
@@ -653,7 +857,13 @@ class YouTubeAutomationAgent {
     this.app.post('/api/ideas/:ideaId/generate', protect, async (req, res) => {
       const idea = await this.db.updateContentIdea(req.params.ideaId, { status: 'generating' });
       if (!idea) return res.status(404).json({ error: 'Idea not found' });
-      const job = await this.startGenerationJob({ topic: idea.topic, style: idea.style, length: req.body?.length || 'medium', source: 'idea' });
+      const job = await this.startGenerationJob({
+        topic: idea.topic,
+        style: idea.style,
+        length: req.body?.length || 'medium',
+        language: req.body?.language || null,
+        source: 'idea'
+      });
       await this.db.updateContentIdea(idea.id, { status: 'generated' });
       return res.status(202).json({ success: true, result: job });
     });
@@ -752,7 +962,9 @@ class YouTubeAutomationAgent {
       await this.db.updateGenerationJob(jobId, { status: 'running', stage: 'starting', progress: 2, error: null });
       const result = await this.generateContent(input.topic, input.style, input.length, {
         jobId,
-        strategyContext: input.strategyContext
+        language: input.language,
+        voice: input.voice,
+        strategyContext: input.strategyContext || {}
       });
       await this.db.updateGenerationJob(jobId, {
         status: 'completed',
@@ -797,9 +1009,15 @@ class YouTubeAutomationAgent {
 
   async generateContent(topic = null, style = null, length = 'medium', options = {}) {
     this.logger.info('Starting content generation pipeline...');
-    const { jobId = null, strategyContext = {} } = options;
+    const { jobId = null } = options;
+    const strategyContext = options.strategyContext && typeof options.strategyContext === 'object'
+      ? options.strategyContext
+      : {};
     const profile = await this.db.getChannelProfile() || {};
     const lengthLabels = { short: '2-4 minutes', medium: '8-12 minutes', long: '15-20 minutes' };
+    const requestedLanguage = normalizeContentLanguage(
+      options.language || strategyContext.language || profile.default_language
+    );
 
     // Step 1: Strategy
     await this.updateJobStage(jobId, 'strategy', 10);
@@ -820,6 +1038,23 @@ class YouTubeAutomationAgent {
     strategy.channelValueProposition = strategyContext.valueProposition || null;
     strategy.channelConstraints = strategyContext.constraints || null;
     strategy.callToAction = profile.call_to_action || null;
+    if (requestedLanguage) {
+      strategy.language = requestedLanguage.iso;
+      strategy.contentLanguage = requestedLanguage.name;
+    }
+    const selectedVoice = await this.resolveSelectedVoice(
+      options.voice || strategyContext.voice || profile.default_voice
+    );
+    if (selectedVoice) {
+      strategy.voice = selectedVoice.id;
+      strategy.voiceRecord = selectedVoice;
+      if (!requestedLanguage && selectedVoice.iso) {
+        strategy.language = selectedVoice.iso;
+        strategy.contentLanguage = selectedVoice.language || selectedVoice.name;
+      }
+    }
+    const { attachSpeakingStyle } = require('./utils/speaking-style-service');
+    await attachSpeakingStyle(strategy, this.db);
     this.logger.info(`Strategy generated: ${strategy.topic}`);
 
     // Step 2: Script Writing
@@ -980,8 +1215,127 @@ class YouTubeAutomationAgent {
     }
   }
 
+  parseSpeakingStyleUrls(body = {}) {
+    const raw = body.urls ?? body.links ?? body.videos ?? [];
+    const list = Array.isArray(raw)
+      ? raw
+      : String(raw).split(/[\n,]+/);
+    const service = new SpeakingStyleService(null, {});
+    const unique = service.normalizeInputs(list).slice(0, 5);
+    if (!unique.length) {
+      throw new Error('Paste 1–5 YouTube video links (yours or inspiration)');
+    }
+    return unique.map(item => item.url);
+  }
+
+  async getSpeakingStyleDashboard() {
+    const profile = this.db?.getSpeakingStyleProfile ? await this.db.getSpeakingStyleProfile() : null;
+    const enabled = this.db?.getSetting ? await this.db.getSetting('speaking_style_enabled') : null;
+    const rows = this.db?.listSpeakingStyleSources ? await this.db.listSpeakingStyleSources(5) : [];
+    return {
+      enabled: enabled !== 'false',
+      profile,
+      sources: rows.map(row => ({
+        videoId: row.video_id,
+        url: row.url,
+        title: row.title,
+        language: row.language,
+        excerpt: row.excerpt,
+        durationSeconds: row.duration_s
+      })),
+      job: this.speakingStyleJob || { status: 'idle' }
+    };
+  }
+
+  isSpeakingStyleJobStale() {
+    if (this.speakingStyleJob?.status !== 'running') return false;
+    const startedAt = Date.parse(this.speakingStyleJob.startedAt || '');
+    const maxMs = Number(process.env.SPEAKING_STYLE_JOB_TIMEOUT_MS || 12 * 60 * 1000);
+    return Number.isFinite(startedAt) && Date.now() - startedAt > maxMs;
+  }
+
+  startSpeakingStyleJob(urls, options = {}) {
+    const jobId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const startedAt = new Date().toISOString();
+    this.speakingStyleJob = {
+      id: jobId,
+      status: 'running',
+      startedAt,
+      urls,
+      message: `Learning style from ${urls.length} video${urls.length === 1 ? '' : 's'}…`
+    };
+
+    const apply = (next) => {
+      if (this.speakingStyleJob?.id !== jobId) return;
+      this.speakingStyleJob = { ...this.speakingStyleJob, ...next };
+    };
+
+    const service = new SpeakingStyleService(this.db, this.credentials);
+    const timeoutMs = Number(process.env.SPEAKING_STYLE_JOB_TIMEOUT_MS || 12 * 60 * 1000);
+    let timer;
+    const work = service.ingestYouTubeVideos(urls, {
+      language: options.language,
+      maxMinutes: Number(process.env.SPEAKING_STYLE_MAX_MINUTES || 8),
+      onProgress: (message) => apply({ message })
+    });
+
+    Promise.race([
+      work,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error('Learning timed out while downloading or transcribing. Try again with shorter videos.'));
+        }, timeoutMs);
+      })
+    ]).then(result => {
+      apply({
+        status: 'complete',
+        completedAt: new Date().toISOString(),
+        sourceCount: result.sources?.length || 0,
+        message: `Learned a speaking style from ${result.sources?.length || 0} video${result.sources?.length === 1 ? '' : 's'}.`
+      });
+    }).catch(error => {
+      apply({
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        error: error.message,
+        message: error.message
+      });
+    }).finally(() => clearTimeout(timer));
+  }
+
+  youtubeRedirectUri() {
+    const port = Number(process.env.PORT || 3456);
+    return `http://127.0.0.1:${port}/api/youtube/callback`;
+  }
+
+  getYouTubeDashboardStatus() {
+    if (this.credentials?.getYouTubePublicStatus) {
+      return this.credentials.getYouTubePublicStatus();
+    }
+    return {
+      configured: false,
+      connected: Boolean(this.credentials?.hasYouTubeUpload?.()),
+      clientIdMasked: '',
+      redirectUri: this.youtubeRedirectUri()
+    };
+  }
+
+  youtubeOauthPage(title, message, success) {
+    const safeTitle = String(title || '').replace(/[<>&]/g, '');
+    const safeMessage = String(message || '').replace(/[<>&]/g, '');
+    return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>${safeTitle}</title>
+<meta http-equiv="refresh" content="2;url=/#settings">
+<style>body{font-family:Arial,sans-serif;background:#10141c;color:#f3f6fb;display:grid;place-items:center;min-height:100vh;margin:0}main{max-width:420px;text-align:center}a{color:#72a5ff}</style>
+</head><body><main>
+<h1>${success ? '✓' : '×'} ${safeTitle}</h1>
+<p>${safeMessage}</p>
+<p><a href="/#settings">Return to Channel setup</a></p>
+</main></body></html>`;
+  }
+
   validateProfile(input) {
-    const textFields = ['channelName', 'goal', 'targetAudience', 'brandVoice', 'defaultStyle', 'callToAction', 'visualStyle', 'timezone'];
+    const textFields = ['channelName', 'goal', 'targetAudience', 'brandVoice', 'defaultStyle', 'defaultLanguage', 'defaultVoice', 'callToAction', 'visualStyle', 'timezone'];
     const result = {};
     for (const field of textFields) {
       if (input[field] !== undefined) {
@@ -989,6 +1343,17 @@ class YouTubeAutomationAgent {
         if (value.length > 500) throw new Error(`${field} is too long`);
         result[field] = value;
       }
+    }
+    if (result.defaultLanguage) {
+      const language = normalizeContentLanguage(result.defaultLanguage);
+      if (!language) throw new Error('defaultLanguage must be a Fonada TTS language');
+      result.defaultLanguage = language.iso;
+    }
+    if (result.defaultVoice && !isPlausibleVoiceId(result.defaultVoice)) {
+      throw new Error('defaultVoice must be a Fonada catalog, V1, or cloned voice id');
+    }
+    if (result.timezone) {
+      result.timezone = normalizeChannelTimezone(result.timezone);
     }
     if (input.bannedTopics !== undefined) {
       const topics = Array.isArray(input.bannedTopics) ? input.bannedTopics : String(input.bannedTopics).split(',');
@@ -1126,6 +1491,8 @@ class YouTubeAutomationAgent {
       console.log(chalk.gray('─'.repeat(50)));
       if (this.setupRequired) {
         console.log(chalk.yellow('\n⚙️  Setup is required. The dashboard is available; run npm run walkthrough to enable generation.'));
+      } else if (!this.credentials.hasYouTubeUpload()) {
+        console.log(chalk.yellow('\n⚙️  YouTube is not connected. Generation and review are available; connect YouTube before uploading.'));
       } else {
         console.log(chalk.yellow('\n🤖 Automation is active. Approved content will be published on schedule.'));
       }

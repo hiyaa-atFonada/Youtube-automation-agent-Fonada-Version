@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Dashboard **Speaking style** page: learn delivery from up to 5 YouTube links (Fonada ASR) and inject that style into the next AI scripts
+- Connect YouTube from **Channel setup** (OAuth client + Google sign-in, redirect `http://127.0.0.1:3456/api/youtube/callback`)
+- Fonada Klone V2 / share_id voice selection and spoken-language controls in Channel setup and Create video
+- Slideshow duration follows real narration length (no `-shortest` mux trim)
+- Operator data (`.env`, OAuth tokens, generated media, SQLite) is gitignored; `.env.example` documents current settings
+
 ## v2.6.0 — 2026-08-20
 
 - Added a user-triggered Production Readiness Gate with live text, narration, YouTube-access, local audio/video MP4, and queued-metadata probes; paid image verification is explicit opt-in

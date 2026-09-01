@@ -33,6 +33,8 @@ class SystemTest {
       { name: 'Placeholder Scheduling Guard', test: () => this.testPlaceholderSchedulingGuard() },
       { name: 'FFmpeg Resolution', test: () => this.testFFmpegResolution() },
       { name: 'Gemini Media Provider Selection', test: () => this.testGeminiMediaProvider() },
+      { name: 'Fonada Multilingual TTS', test: () => this.testFonadaMultilingualTTS() },
+      { name: 'Speaking Style ASR Helpers', test: () => this.testSpeakingStyleAsrHelpers() },
       { name: 'Slideshow Renderer', test: () => this.testSlideshowRenderer() },
       { name: 'Evergreen Template Topics', test: () => this.testEvergreenTopics() },
       { name: 'Walkthrough Module', test: () => this.testWalkthroughModule() },
@@ -295,9 +297,37 @@ class SystemTest {
         !Array.isArray(dashboard.jobs) ||
         !Array.isArray(dashboard.pipeline) ||
         !Array.isArray(dashboard.operatorRuns) ||
-        dashboard.activation?.privacy !== 'local-only'
+        dashboard.activation?.privacy !== 'local-only' ||
+        typeof dashboard.youtube?.connected !== 'boolean' ||
+        typeof dashboard.speakingStyle?.enabled !== 'boolean'
       ) {
         throw new Error('Operator dashboard API did not return its data contract');
+      }
+      const styleRes = await fetch(`http://127.0.0.1:${port}/api/speaking-style`);
+      const styleBody = await styleRes.json();
+      if (!styleRes.ok || !Array.isArray(styleBody.sources)) {
+        throw new Error('Speaking style API did not return sources');
+      }
+      const badLearn = await fetch(`http://127.0.0.1:${port}/api/speaking-style/learn`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls: ['https://example.com/not-youtube'] })
+      });
+      if (badLearn.status !== 400) {
+        throw new Error('Invalid speaking-style links were not rejected');
+      }
+      const youtubeStatus = await fetch(`http://127.0.0.1:${port}/api/youtube`);
+      const youtubeBody = await youtubeStatus.json();
+      if (!youtubeStatus.ok || youtubeBody.connected !== false) {
+        throw new Error('YouTube status API did not report a disconnected default');
+      }
+      const youtubeSave = await fetch(`http://127.0.0.1:${port}/api/youtube`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: 'not-a-client', clientSecret: 'x' })
+      });
+      if (youtubeSave.status !== 400 && youtubeSave.status !== 503) {
+        throw new Error('Invalid YouTube client was not rejected');
       }
       const unavailableStart = await fetch(`http://127.0.0.1:${port}/api/operator/start`, {
         method: 'POST',
@@ -571,7 +601,7 @@ class SystemTest {
     }
     await service.assertReady('Test automation');
 
-    const failingService = new ProductionReadinessService(db, { credentials: {} }, {
+    const youtubeOptional = new ProductionReadinessService(db, { credentials: {} }, {
       probes: {
         text: passingProbe('Text'),
         image: passingProbe('Image'),
@@ -581,11 +611,30 @@ class SystemTest {
         metadata: passingProbe('Metadata')
       }
     });
+    const youtubeFailed = await youtubeOptional.run();
+    if (youtubeFailed.blockingFailures.includes('youtube_access')) {
+      throw new Error('YouTube access should not block generation readiness');
+    }
+    if (youtubeFailed.checks.find(check => check.id === 'youtube_access').message.includes('sk-secret-value')) {
+      throw new Error('Readiness diagnostics did not redact a provider-shaped secret');
+    }
+    await youtubeOptional.assertReady('Test automation');
+
+    const failingService = new ProductionReadinessService(db, { credentials: {} }, {
+      probes: {
+        text: passingProbe('Text'),
+        image: passingProbe('Image'),
+        narration: async () => { throw new Error('token rejected sk-secret-value'); },
+        videoAssembly: passingProbe('Video'),
+        youtube: passingProbe('YouTube'),
+        metadata: passingProbe('Metadata')
+      }
+    });
     const failed = await failingService.run();
-    if (failed.status !== 'failed' || failed.blockingFailures[0] !== 'youtube_access') {
+    if (failed.status !== 'failed' || failed.blockingFailures[0] !== 'voice_narration') {
       throw new Error('A blocking readiness probe did not fail closed');
     }
-    if (failed.checks.find(check => check.id === 'youtube_access').message.includes('sk-secret-value')) {
+    if (failed.checks.find(check => check.id === 'voice_narration').message.includes('sk-secret-value')) {
       throw new Error('Readiness diagnostics did not redact a provider-shaped secret');
     }
     let blocked = false;
@@ -676,6 +725,31 @@ class SystemTest {
     const invalidStyle = agent.validateGenerateRequestBody({ style: 'x'.repeat(51) });
     if (invalidStyle.valid || invalidStyle.status !== 400) {
       throw new Error('Overlong style was not rejected');
+    }
+
+    const hindiJob = agent.validateGenerateRequestBody({ topic: 'Skincare', language: 'Hindi' });
+    if (!hindiJob.valid || hindiJob.value.language !== 'hi') {
+      throw new Error('Generate request did not accept a user-selected language');
+    }
+    const bengaliJob = agent.validateGenerateRequestBody({ topic: 'Skincare', language: 'Bengali' });
+    if (!bengaliJob.valid || bengaliJob.value.language !== 'bn') {
+      throw new Error('Fonada TTS languages beyond Hindi/English/Tamil/Telugu were rejected');
+    }
+    const badLanguage = agent.validateGenerateRequestBody({ language: 'french' });
+    if (badLanguage.valid || badLanguage.status !== 400) {
+      throw new Error('Unsupported generate language was not rejected');
+    }
+    const catalogVoice = agent.validateGenerateRequestBody({ voice: 'v2:enceladus@Hindi' });
+    if (!catalogVoice.valid || catalogVoice.value.voice !== 'v2:enceladus@Hindi') {
+      throw new Error('Generate request did not accept a Klone V2 catalog voice');
+    }
+    const typedVoice = agent.validateGenerateRequestBody({ voice: 'enceladus' });
+    if (!typedVoice.valid || typedVoice.value.voice !== 'enceladus') {
+      throw new Error('Generate request did not accept a typed voice name');
+    }
+    const badVoice = agent.validateGenerateRequestBody({ voice: '!!!' });
+    if (badVoice.valid || badVoice.status !== 400) {
+      throw new Error('Unsupported generate voice was not rejected');
     }
 
     const previousKey = process.env.API_KEY;
@@ -788,10 +862,46 @@ class SystemTest {
       }
 
       manager.credentials = { openai: { apiKey: 'sk-test' } };
-      const missingYouTube = manager.getMissingCredentials();
-      if (missingYouTube.length !== 1 || missingYouTube[0] !== 'youtube') {
-        throw new Error('Missing YouTube credentials were not detected');
+      manager.tokens = {};
+      if (manager.getMissingCredentials().length !== 0) {
+        throw new Error('YouTube should not be required to generate content');
       }
+      if (!manager.getMissingUploadCredentials().includes('youtube') || manager.hasYouTubeUpload()) {
+        throw new Error('Missing YouTube upload credentials were not detected');
+      }
+
+      manager.credentials = { openai: { apiKey: 'sk-test' }, youtube: { client_id: 'x' } };
+      manager.tokens = { youtube: { access_token: 't' } };
+      if (!manager.hasYouTubeUpload() || manager.getMissingUploadCredentials().length !== 0) {
+        throw new Error('Configured YouTube upload credentials were not recognized');
+      }
+
+      const fs = require('fs').promises;
+      const os = require('os');
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-yt-'));
+      const stored = new CredentialManager({
+        credentialsPath: path.join(tempDir, 'credentials.json'),
+        tokensPath: path.join(tempDir, 'tokens.json')
+      });
+      const saved = await stored.saveYouTubeClient({
+        clientId: '123456789-abc.apps.googleusercontent.com',
+        clientSecret: 'yt-secret',
+        redirectUri: 'http://127.0.0.1:3456/api/youtube/callback'
+      });
+      if (!saved.configured || saved.connected || !saved.clientIdMasked.includes('…')) {
+        throw new Error('Saved YouTube client status was incorrect');
+      }
+      const authUrl = stored.createYouTubeAuthUrl('http://127.0.0.1:3456/api/youtube/callback');
+      if (!/accounts\.google\.com/.test(authUrl)) {
+        throw new Error('YouTube auth URL was not generated');
+      }
+      stored.tokens = { youtube: { access_token: 't' } };
+      await stored.saveTokens();
+      const disconnected = await stored.disconnectYouTube();
+      if (disconnected.connected) {
+        throw new Error('YouTube disconnect did not clear tokens');
+      }
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     } finally {
       for (const key of envKeys) {
         if (savedEnv[key] === undefined) {
@@ -831,6 +941,9 @@ class SystemTest {
       if (calls[0].max_tokens !== undefined) {
         throw new Error('Legacy max_tokens must not be sent to modern models');
       }
+      if (calls[0].temperature !== undefined) {
+        throw new Error('gpt-5.6 must not receive a custom temperature');
+      }
 
       // Legacy models reject max_completion_tokens with a 400 — the service must
       // retry the identical request using max_tokens.
@@ -847,6 +960,23 @@ class SystemTest {
       const legacyResult = await service.generateText('legacy prompt');
       if (legacyResult !== 'legacy-ok') throw new Error('Legacy fallback did not return content');
       if (attempt !== 2) throw new Error('Expected exactly one retry with max_tokens');
+
+      service.model = 'gpt-4o-mini';
+      const temperatureRetry = [];
+      service.client.chat.completions.create = async (params) => {
+        temperatureRetry.push(params);
+        if (params.temperature === 0) {
+          const err = new Error("Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.");
+          err.status = 400;
+          throw err;
+        }
+        return { choices: [{ message: { content: 'temp-ok' } }] };
+      };
+      const retried = await service.generateText('temperature prompt', { temperature: 0 });
+      if (retried !== 'temp-ok' || temperatureRetry.length !== 2 || temperatureRetry[1].temperature !== undefined) {
+        throw new Error('Unsupported temperature was not retried without the parameter');
+      }
+      service.model = 'gpt-5.6';
 
       // An empty model body must surface as a descriptive error, not the cryptic
       // "Unexpected end of JSON input" the agents used to log.
@@ -930,7 +1060,7 @@ class SystemTest {
   }
 
   async testFFmpegResolution() {
-    const { getFFmpegPath, checkFFmpeg, ffmpegInstallHint } = require('./utils/ffmpeg');
+    const { getFFmpegPath, checkFFmpeg, getMediaDuration, ffmpegInstallHint } = require('./utils/ffmpeg');
 
     const ffmpegPath = getFFmpegPath();
     if (typeof ffmpegPath !== 'string' || ffmpegPath.length === 0) {
@@ -946,13 +1076,17 @@ class SystemTest {
       throw new Error('ffmpegInstallHint did not return install guidance');
     }
 
+    if (typeof getMediaDuration !== 'function') {
+      throw new Error('getMediaDuration is not exported');
+    }
+
     this.logger.info(`FFmpeg resolution test completed (binary: ${ffmpegPath}, available: ${available})`);
   }
 
   async testGeminiMediaProvider() {
     const { AIVideoGenerator } = require('./utils/ai-video-generator');
 
-    const envKeys = ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'REPLICATE_API_KEY', 'ELEVENLABS_API_KEY'];
+    const envKeys = ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'REPLICATE_API_KEY', 'ELEVENLABS_API_KEY', 'FONADA_API_KEY'];
     const savedEnv = {};
     for (const key of envKeys) {
       savedEnv[key] = process.env[key];
@@ -985,6 +1119,230 @@ class SystemTest {
     this.logger.info('Gemini media provider selection test completed successfully');
   }
 
+  async testFonadaMultilingualTTS() {
+    const {
+      chunkTextForTTS,
+      CONTENT_LANGUAGE_CHOICES,
+      detectLanguageFromText,
+      isPlausibleVoiceId,
+      lookupLanguage,
+      normalizeFonadaVoice,
+      normalizeFonadaVoicesPayload,
+      parseFonadaError,
+      resolveContentLanguage,
+      resolveFonadaLanguage
+    } = require('./utils/fonada-tts');
+    const { AIVideoGenerator } = require('./utils/ai-video-generator');
+
+    if (CONTENT_LANGUAGE_CHOICES.length < 20 || !CONTENT_LANGUAGE_CHOICES.some(choice => choice.iso === 'bn')) {
+      throw new Error('Fonada TTS spoken-language catalog is incomplete');
+    }
+
+    const hindi = detectLanguageFromText('नमस्ते दोस्तों, आज हम एक आसान ट्रिक सीखेंगे।');
+    if (hindi.iso !== 'hi' || hindi.v1 !== 'Hindi') {
+      throw new Error(`Hindi script was not detected: ${JSON.stringify(hindi)}`);
+    }
+
+    const tamil = detectLanguageFromText('வணக்கம் நண்பர்களே இன்று ஒரு புதிய பாடம்');
+    if (tamil.iso !== 'ta' || tamil.v1 !== 'Tamil') {
+      throw new Error(`Tamil script was not detected: ${JSON.stringify(tamil)}`);
+    }
+
+    const telugu = detectLanguageFromText('నమస్కారం ఈ రోజు మనం ఒక కొత్త విషయం నేర్చుకుందాం');
+    if (telugu.iso !== 'te' || telugu.v1 !== 'Telugu') {
+      throw new Error(`Telugu script was not detected: ${JSON.stringify(telugu)}`);
+    }
+
+    const english = resolveFonadaLanguage({ text: 'Welcome back. Today we will learn a simple idea.' });
+    if (english.iso !== 'en' || english.v1 !== 'English') {
+      throw new Error(`English fallback failed: ${JSON.stringify(english)}`);
+    }
+
+    const previousLanguageEnv = process.env.FONADA_LANGUAGE;
+    process.env.FONADA_LANGUAGE = 'Hindi';
+    try {
+      const ignoredEnv = resolveContentLanguage({ text: 'Welcome back. Today we will learn a simple idea.' });
+      if (ignoredEnv.iso !== 'en') {
+        throw new Error('Narration language should come from the job or script, not FONADA_LANGUAGE');
+      }
+      const userHindi = resolveContentLanguage({ language: 'Hindi', text: 'Welcome back.' });
+      if (userHindi.iso !== 'hi') {
+        throw new Error('Explicit user language should win for English script text');
+      }
+    } finally {
+      if (previousLanguageEnv === undefined) delete process.env.FONADA_LANGUAGE;
+      else process.env.FONADA_LANGUAGE = previousLanguageEnv;
+    }
+
+    if (lookupLanguage('hi-IN')?.iso !== 'hi' || lookupLanguage('Tamil')?.v1 !== 'Tamil') {
+      throw new Error('Language aliases did not normalize to Fonada V1 / ISO values');
+    }
+
+    const hindiBeatsEnglishHint = resolveFonadaLanguage({
+      explicit: 'en',
+      text: 'नमस्ते दोस्तों, आज हम एक आसान ट्रिक सीखेंगे।',
+      fallback: 'English'
+    });
+    if (hindiBeatsEnglishHint.iso !== 'hi') {
+      throw new Error('Narration language should follow the script script, not a default English hint');
+    }
+
+    const chunks = chunkTextForTTS('First sentence. Second sentence. Third sentence that should stay readable.', 24);
+    if (chunks.length < 2 || chunks.some(chunk => chunk.length > 24)) {
+      throw new Error(`TTS chunking produced invalid pieces: ${JSON.stringify(chunks)}`);
+    }
+
+    const errorText = parseFonadaError(Buffer.from(JSON.stringify({ detail: { message: 'credits_exhausted' } })), 429);
+    if (!/credits_exhausted/.test(errorText)) {
+      throw new Error(`Fonada error parsing failed: ${errorText}`);
+    }
+
+    const envKeys = ['FONADA_API_KEY', 'FONADA_SHARE_ID', 'FONADA_LANGUAGE', 'FONADA_VOICE', 'FONADA_TTS_MODEL'];
+    const savedEnv = {};
+    for (const key of envKeys) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+
+    try {
+      const generator = new AIVideoGenerator({
+        fonada: { apiKey: 'test-fonada-key', language: 'Hindi', voice: 'Dhruv' }
+      });
+      if (!generator.canUseFonadaV1() || generator.canUseFonadaClone()) {
+        throw new Error('Fonada V1-only credentials were not selected correctly');
+      }
+      const language = generator.resolveNarrationLanguage('नमस्ते', null);
+      if (language.iso !== 'hi') {
+        throw new Error('Generator did not resolve Hindi narration language from script text');
+      }
+
+      const cloned = new AIVideoGenerator({
+        fonada: { apiKey: 'test-fonada-key', shareId: 'abc12xyz', model: 'klone-v2' }
+      });
+      if (!cloned.canUseFonadaClone() || !cloned.canUseFonadaV1()) {
+        throw new Error('Fonada Klone credentials should prefer clone and still allow V1 fallback');
+      }
+
+      const v1Only = new AIVideoGenerator({
+        fonada: { apiKey: 'test-fonada-key', shareId: 'abc12xyz', model: 'v1' }
+      });
+      if (v1Only.canUseFonadaClone()) {
+        throw new Error('FONADA_TTS_MODEL=v1 should skip Klone even when a share_id is present');
+      }
+
+      const catalog = normalizeFonadaVoicesPayload({
+        voices: [
+          { id: 'enceladus@Hindi', display_name: 'enceladus', language: 'Hindi', gender: 'male', enabled: true },
+          { id: 'Sadhguru@English', display_name: 'Sadhguru', language: 'English', enabled: true }
+        ]
+      });
+      if (catalog.length !== 2 || catalog[0].id !== 'v2:enceladus@Hindi' || catalog[0].iso !== 'hi') {
+        throw new Error(`Klone V2 voice catalog was not normalised: ${JSON.stringify(catalog)}`);
+      }
+      if (!isPlausibleVoiceId('v2:enceladus@Hindi') || !isPlausibleVoiceId('v1:Dhruv') || !isPlausibleVoiceId('clone') || !isPlausibleVoiceId('enceladus')) {
+        throw new Error('Known Fonada voice ids were rejected');
+      }
+      if (isPlausibleVoiceId('!!!') || isPlausibleVoiceId('12345')) {
+        throw new Error('Invalid Fonada voice ids were accepted');
+      }
+      if (normalizeFonadaVoice('v2:enceladus@Hindi', catalog)?.name !== 'enceladus') {
+        throw new Error('Selected Klone V2 voice was not resolved by id');
+      }
+
+      const v1Preferred = new AIVideoGenerator({
+        fonada: { apiKey: 'test-fonada-key', shareId: 'abc12xyz', model: 'klone-v2' }
+      });
+      if (v1Preferred.canUseFonadaClone({}, { source: 'v1', voiceId: 'Dhruv' })) {
+        throw new Error('An explicit Fonada V1 voice should skip Klone V2');
+      }
+    } finally {
+      for (const key of envKeys) {
+        if (savedEnv[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = savedEnv[key];
+        }
+      }
+    }
+
+    this.logger.info('Fonada multilingual TTS test completed successfully');
+  }
+
+  async testSpeakingStyleAsrHelpers() {
+    const { parseYouTubeId, normalizeYouTubeUrl } = require('./utils/youtube-audio');
+    const {
+      SpeakingStyleService,
+      buildHeuristicProfile,
+      excerptTranscript,
+      formatSpeakingStyleForPrompt
+    } = require('./utils/speaking-style-service');
+    const { resolveAsrLanguage } = require('./utils/fonada-asr');
+
+    const id = 'dQw4w9WgXcQ';
+    if (parseYouTubeId(`https://youtu.be/${id}`) !== id) {
+      throw new Error('youtu.be IDs were not parsed');
+    }
+    if (parseYouTubeId(`https://www.youtube.com/watch?v=${id}&t=12s`) !== id) {
+      throw new Error('watch URL IDs were not parsed');
+    }
+    if (parseYouTubeId(`https://www.youtube.com/shorts/${id}`) !== id) {
+      throw new Error('shorts URL IDs were not parsed');
+    }
+    if (normalizeYouTubeUrl(id) !== `https://www.youtube.com/watch?v=${id}`) {
+      throw new Error('bare video IDs were not normalized');
+    }
+
+    const service = new SpeakingStyleService(null, {});
+    const unique = service.normalizeInputs([
+      `https://www.youtube.com/watch?v=${id}`,
+      `https://youtu.be/${id}`,
+      'https://example.com/not-youtube'
+    ]);
+    if (unique.length !== 1 || unique[0].videoId !== id) {
+      throw new Error('YouTube URL normalization did not dedupe valid links');
+    }
+
+    const excerpt = excerptTranscript('word '.repeat(200), 40);
+    if (!excerpt.endsWith('…') || excerpt.length > 42) {
+      throw new Error('Transcript excerpts were not trimmed');
+    }
+
+    const profile = buildHeuristicProfile([
+      {
+        title: 'Sample',
+        url: normalizeYouTubeUrl(id),
+        transcript: 'नमस्ते दोस्तों। आज एक छोटी सी बात। Subscribe जरूर करना।',
+        excerpt: 'नमस्ते दोस्तों।'
+      }
+    ]);
+    const prompt = formatSpeakingStyleForPrompt(profile);
+    if (!/Speak like this creator/.test(prompt) || !/नमस्ते/.test(prompt)) {
+      throw new Error('Speaking style prompt was not built from ASR transcripts');
+    }
+    if (resolveAsrLanguage('Hindi') !== 'hi') {
+      throw new Error('Fonada ASR language mapping failed for Hindi');
+    }
+    if (resolveAsrLanguage('Hindi', 'Welcome back to the channel') !== 'hi') {
+      throw new Error('ASR should keep the user-selected language for English speech');
+    }
+
+    const { YouTubeAutomationAgent } = require('./index');
+    const agent = new YouTubeAutomationAgent();
+    const parsed = agent.parseSpeakingStyleUrls({
+      urls: [
+        `https://www.youtube.com/watch?v=${id}`,
+        `https://youtu.be/${id}`,
+        'https://www.youtube.com/watch?v=oHg5SJYRHA0',
+        'not-a-link'
+      ]
+    });
+    if (parsed.length !== 2) {
+      throw new Error('Speaking-style URL parser did not keep 1–5 unique YouTube links');
+    }
+
+    this.logger.info('Speaking style ASR helper test completed successfully');
+  }
+
   async testSlideshowRenderer() {
     const { AIVideoGenerator } = require('./utils/ai-video-generator');
     const { checkFFmpeg } = require('./utils/ffmpeg');
@@ -1010,12 +1368,55 @@ class SystemTest {
       }
 
       const generator = new AIVideoGenerator({});
+      const arrayScript = {
+        hook: { text: 'This opening line starts the video with a concrete promise for the viewer.' },
+        introduction: {
+          greeting: 'Welcome back to the channel everyone.',
+          topicIntro: 'Today we are walking through a complete retrieval augmented generation architecture.',
+          valueProposition: 'By the end you will know how each pipeline stage affects the final answer.'
+        },
+        mainContent: {
+          sections: [
+            {
+              title: 'Ingestion',
+              content: [
+                'Retrieval starts by ingesting source material such as PDFs, manuals, and database records.',
+                'The ingestion layer extracts text, preserves metadata, and tracks document versions carefully.'
+              ]
+            },
+            {
+              title: 'Retrieval',
+              content: [
+                'Each chunk is converted into an embedding that captures meaning rather than exact wording.',
+                'Production pipelines combine vector search with keyword search and metadata filters.'
+              ]
+            }
+          ]
+        },
+        conclusion: { finalThought: 'That feedback loop is what turns a basic demo into a maintainable system.' }
+      };
+
+      const estimated = generator.calculateScriptDuration(arrayScript);
+      if (estimated < 40) {
+        throw new Error(`Array script duration was under-counted as ${estimated}s`);
+      }
+      const slideHtml = generator.formatSectionContent(arrayScript.mainContent.sections[0]);
+      if (!slideHtml.includes('ingest') || slideHtml.includes('Content coming soon')) {
+        throw new Error('Slideshow did not render spoken array content');
+      }
+
       const videoPath = path.join(dir, 'out.mp4');
-      await generator.renderSlidesToVideo(stills, 6, videoPath);
+      await generator.renderSlidesToVideo(stills, 12, videoPath);
 
       const stats = await fs.stat(videoPath);
       if (!stats.size) {
         throw new Error('Rendered slideshow video is empty');
+      }
+
+      const { getMediaDuration } = require('./utils/ffmpeg');
+      const renderedSeconds = await getMediaDuration(videoPath);
+      if (renderedSeconds && Math.abs(renderedSeconds - 12) > 1.25) {
+        throw new Error(`Slideshow duration was ${renderedSeconds}s instead of ~12s`);
       }
 
       // Silent fallback: an unusable audio path must still yield a playable output
@@ -1024,6 +1425,18 @@ class SystemTest {
       const finalStats = await fs.stat(finalPath);
       if (!finalStats.size) {
         throw new Error('Silent-audio fallback did not produce a video');
+      }
+
+      const { runFFmpeg } = require('./utils/ffmpeg');
+      const shortVisual = path.join(dir, 'short.mp4');
+      const longAudio = path.join(dir, 'long.mp3');
+      const muxedPath = path.join(dir, 'muxed.mp4');
+      await runFFmpeg(['-y', '-f', 'lavfi', '-i', 'color=c=black:s=320x180:r=24', '-t', '2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', shortVisual]);
+      await runFFmpeg(['-y', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4', '-c:a', 'libmp3lame', longAudio]);
+      await generator.addAudioToVideo(shortVisual, longAudio, muxedPath);
+      const muxedSeconds = await getMediaDuration(muxedPath);
+      if (muxedSeconds < 3.8) {
+        throw new Error(`Mux chopped narration to ${muxedSeconds}s instead of ~4s`);
       }
     } finally {
       await fs.rm(dir, { recursive: true, force: true }).catch(() => {});

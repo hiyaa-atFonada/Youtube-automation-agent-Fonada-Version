@@ -112,6 +112,8 @@ class DailyAutomation {
 
       // Generate content strategy
       const strategy = await this.agents.strategy.generateContentStrategy();
+      const { attachSpeakingStyle } = require('../utils/speaking-style-service');
+      await attachSpeakingStyle(strategy, this.db);
       this.logger.info(`Generated strategy: ${strategy.topic}`);
 
       // Generate script

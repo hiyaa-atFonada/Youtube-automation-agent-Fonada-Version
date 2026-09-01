@@ -67,6 +67,7 @@ class AutonomousChannelOperator {
             topic: item.topic,
             style: item.format,
             length: item.length,
+            language: item.language || strategy.default_language,
             source: 'autonomous_operator',
             strategyContext: {
               angle: item.angle,
@@ -74,7 +75,8 @@ class AutonomousChannelOperator {
               audience: strategy.audience,
               objective: strategy.objective,
               valueProposition: strategy.value_proposition,
-              constraints: strategy.constraints
+              constraints: strategy.constraints,
+              language: item.language || strategy.default_language
             }
           });
           record.jobId = job.id;

@@ -44,6 +44,21 @@ async function runFFmpeg(args) {
   return execFileAsync(getFFmpegPath(), args, { maxBuffer: 32 * 1024 * 1024 });
 }
 
+async function getMediaDuration(filePath) {
+  if (!filePath) return 0;
+
+  try {
+    await execFileAsync(getFFmpegPath(), ['-i', filePath]);
+    return 0;
+  } catch (error) {
+    const text = `${error.stderr || ''}\n${error.stdout || ''}`;
+    const match = text.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (!match) return 0;
+    const seconds = (Number(match[1]) * 3600) + (Number(match[2]) * 60) + Number(match[3]);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  }
+}
+
 function ffmpegInstallHint() {
   const hints = {
     win32: 'winget install Gyan.FFmpeg (then restart your terminal)',
@@ -55,4 +70,4 @@ function ffmpegInstallHint() {
   return `FFmpeg not found. Install it with: ${platformHint} — or run "npm install" again to fetch the bundled ffmpeg-static binary, or set FFMPEG_PATH to your ffmpeg executable.`;
 }
 
-module.exports = { getFFmpegPath, checkFFmpeg, runFFmpeg, ffmpegInstallHint };
+module.exports = { getFFmpegPath, checkFFmpeg, runFFmpeg, getMediaDuration, ffmpegInstallHint };

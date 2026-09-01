@@ -460,11 +460,11 @@ class SetupWalkthrough {
     const hasGemini = Boolean(creds.gemini?.apiKey || process.env.GEMINI_API_KEY);
     const hasMedia = Boolean(creds.openai?.apiKey || process.env.OPENAI_API_KEY || hasGemini);
     const hasFFmpeg = await checkFFmpeg();
-    const hasUpload = Boolean(creds.youtube && this.cm.tokens.youtube);
+    const hasUpload = this.cm.hasYouTubeUpload();
 
     const rows = [
       { ok: hasText, name: 'Write scripts & pick topics', fix: 'step 2 (AI provider)' },
-      { ok: hasMedia, name: 'Generate images & voice narration', fix: 'step 2 — use a Gemini or OpenAI key' },
+      { ok: hasMedia || Boolean(creds.fonada?.apiKey || process.env.FONADA_API_KEY), name: 'Generate images & voice narration', fix: 'step 2 for images; set FONADA_API_KEY for Fonada narration' },
       { ok: hasFFmpeg, name: 'Assemble real .mp4 videos', fix: ffmpegInstallHint() },
       { ok: hasUpload, name: 'Upload to YouTube', fix: 'step 3 (YouTube connection)' }
     ];

@@ -6,11 +6,25 @@ const chalk = require('chalk');
 const { Logger } = require('./logger');
 const { PROVIDERS, GEMINI_MODELS, GEMINI_DEFAULT_MODEL } = require('./ai-text-service');
 
+const YOUTUBE_SCOPES = [
+  'https://www.googleapis.com/auth/youtube.upload',
+  'https://www.googleapis.com/auth/youtube',
+  'https://www.googleapis.com/auth/youtube.readonly',
+  'https://www.googleapis.com/auth/yt-analytics.readonly'
+];
+
+function maskYouTubeClientId(clientId) {
+  const value = String(clientId || '');
+  if (!value) return '';
+  if (value.length < 18) return '••••';
+  return `${value.slice(0, 12)}…${value.slice(-8)}`;
+}
+
 class CredentialManager {
-  constructor() {
+  constructor(options = {}) {
     this.logger = new Logger('CredentialManager');
-    this.credentialsPath = path.join(__dirname, '..', 'config', 'credentials.json');
-    this.tokensPath = path.join(__dirname, '..', 'config', 'tokens.json');
+    this.credentialsPath = options.credentialsPath || path.join(__dirname, '..', 'config', 'credentials.json');
+    this.tokensPath = options.tokensPath || path.join(__dirname, '..', 'config', 'tokens.json');
     this.credentials = {};
     this.tokens = {};
   }
@@ -516,12 +530,109 @@ class CredentialManager {
     return envKeys.some(key => process.env[key]);
   }
 
+  hasYouTubeUpload() {
+    return Boolean(this.credentials.youtube && this.tokens.youtube);
+  }
+
+  getYouTubePublicStatus() {
+    const clientId = this.credentials.youtube?.client_id || '';
+    return {
+      configured: Boolean(clientId && this.credentials.youtube?.client_secret),
+      connected: this.hasYouTubeUpload(),
+      clientIdMasked: maskYouTubeClientId(clientId),
+      redirectUri: (this.credentials.youtube?.redirect_uris || []).find(Boolean) || null
+    };
+  }
+
+  async saveYouTubeClient({ clientId, clientSecret, redirectUri }) {
+    await this.loadCredentials();
+    await this.loadTokens();
+    const nextId = String(clientId || '').trim();
+    const previousId = this.credentials.youtube?.client_id || '';
+    const nextSecret = String(clientSecret || '').trim() || this.credentials.youtube?.client_secret || '';
+    if (!nextId) throw new Error('Client ID is required');
+    if (!nextSecret) throw new Error('Client secret is required');
+
+    if (previousId && previousId !== nextId && this.tokens.youtube) {
+      delete this.tokens.youtube;
+      await this.saveTokens();
+    }
+
+    const redirectUris = [redirectUri, ...(this.credentials.youtube?.redirect_uris || [])]
+      .map(value => String(value || '').trim())
+      .filter((value, index, list) => value && list.indexOf(value) === index);
+
+    this.credentials.youtube = {
+      client_id: nextId,
+      client_secret: nextSecret,
+      redirect_uris: redirectUris.length ? redirectUris : undefined
+    };
+    await this.saveCredentials();
+    return this.getYouTubePublicStatus();
+  }
+
+  createYouTubeAuthUrl(redirectUri) {
+    const youtube = this.credentials.youtube;
+    if (!youtube?.client_id || !youtube?.client_secret) {
+      throw new Error('Save your YouTube Client ID and Client Secret first');
+    }
+    const oauth2Client = new google.auth.OAuth2(youtube.client_id, youtube.client_secret, redirectUri);
+    return oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      prompt: 'consent',
+      scope: YOUTUBE_SCOPES
+    });
+  }
+
+  async exchangeYouTubeCode(code, redirectUri) {
+    const youtube = this.credentials.youtube;
+    if (!youtube?.client_id || !youtube?.client_secret) {
+      throw new Error('YouTube client credentials are not configured');
+    }
+    const oauth2Client = new google.auth.OAuth2(youtube.client_id, youtube.client_secret, redirectUri);
+    const { tokens } = await oauth2Client.getToken(code);
+    await this.loadTokens();
+    this.tokens.youtube = tokens;
+    await this.saveTokens();
+    return tokens;
+  }
+
+  async disconnectYouTube() {
+    await this.loadTokens();
+    delete this.tokens.youtube;
+    await this.saveTokens();
+    return this.getYouTubePublicStatus();
+  }
+
+  async getYouTubeChannelInfo() {
+    if (!this.hasYouTubeUpload()) return null;
+    try {
+      const youtube = this.getYouTubeClient();
+      const response = await youtube.channels.list({
+        part: 'snippet,statistics',
+        mine: true
+      });
+      const channel = response.data.items?.[0];
+      if (!channel) return null;
+      return {
+        id: channel.id,
+        title: channel.snippet?.title || null,
+        subscribers: channel.statistics?.subscriberCount || null
+      };
+    } catch (error) {
+      this.logger.warn(`YouTube channel lookup failed: ${error.message}`);
+      return { error: 'Saved login could not reach YouTube. Connect again.' };
+    }
+  }
+
+  getMissingUploadCredentials() {
+    if (this.hasYouTubeUpload()) return [];
+    if (!this.credentials.youtube) return ['youtube'];
+    return ['youtube authentication'];
+  }
+
   getMissingCredentials() {
     const missing = [];
-
-    if (!this.credentials.youtube) {
-      missing.push('youtube');
-    }
 
     if (!this.hasAITextProvider()) {
       missing.push('an AI provider (OpenAI, Gemini, OpenRouter, Kimi, MiMo, or GLM)');
@@ -546,10 +657,8 @@ class CredentialManager {
       return false;
     }
 
-    // Validate YouTube tokens
-    if (!this.tokens.youtube) {
-      console.log(chalk.yellow('\n⚠️  YouTube authentication required'));
-      return false;
+    if (!this.hasYouTubeUpload()) {
+      console.log(chalk.yellow('\n⚠️  YouTube is not connected. You can generate and review videos locally; connect YouTube when you are ready to upload.'));
     }
 
     return true;
@@ -655,21 +764,66 @@ class CredentialManager {
         name: 'service',
         message: 'Select your preferred Text-to-Speech service:',
         choices: [
+          { name: 'Fonada Labs (23-language TTS + voice clone)', value: 'fonada' },
           { name: 'OpenAI TTS (gpt-4o-mini-tts, uses your OpenAI key)', value: 'openai-tts' },
-          { name: 'ElevenLabs (highest quality)', value: 'elevenlabs' },
+          { name: 'ElevenLabs (legacy fallback)', value: 'elevenlabs' },
           { name: 'Azure Speech Services', value: 'azure' },
           { name: 'Skip TTS Setup', value: 'skip' }
         ]
       }
     ]);
 
-    if (service === 'openai-tts') {
+    if (service === 'fonada') {
+      await this.setupFonadaCredentials();
+    } else if (service === 'openai-tts') {
       console.log(chalk.green('✅ OpenAI TTS will use your existing OpenAI API key'));
     } else if (service === 'elevenlabs') {
       await this.setupElevenLabsCredentials();
     } else if (service === 'azure') {
       await this.setupAzureSpeechCredentials();
     }
+  }
+
+  async setupFonadaCredentials() {
+    console.log(chalk.cyan('\n🎙️  Fonada Labs Setup'));
+    console.log(chalk.gray('Get your API key from: https://fonadalabs.ai/console'));
+    console.log(chalk.gray('Voice clone share IDs come from Voice Arena: https://fonadalabs.ai/creatives/voice-arena'));
+
+    const answers = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'apiKey',
+        message: 'Enter your Fonada API Key:',
+        validate: input => input.length > 0 || 'API key is required'
+      },
+      {
+        type: 'input',
+        name: 'voice',
+        message: 'Fonada V1 system voice (leave blank for language default):',
+        default: ''
+      },
+      {
+        type: 'input',
+        name: 'shareId',
+        message: 'Optional Klone V2 share_id (your cloned voice):',
+        default: ''
+      }
+    ]);
+
+    this.credentials.fonada = {
+      apiKey: answers.apiKey,
+      voice: answers.voice || undefined,
+      shareId: answers.shareId || undefined,
+      model: answers.shareId ? 'klone-v2' : 'v1'
+    };
+
+    this.setEnvIfPresent('FONADA_API_KEY', answers.apiKey);
+    this.setEnvIfPresent('FONADA_VOICE', answers.voice);
+    this.setEnvIfPresent('FONADA_SHARE_ID', answers.shareId);
+    this.setEnvIfPresent('FONADA_TTS_MODEL', this.credentials.fonada.model);
+
+    await this.saveCredentials();
+    console.log(chalk.green('✅ Fonada Labs credentials configured successfully!'));
   }
 
   async setupElevenLabsCredentials() {

@@ -1,5 +1,6 @@
 const { Logger } = require('../utils/logger');
 const { AITextService } = require('../utils/ai-text-service');
+const { resolveContentLanguage } = require('../utils/fonada-tts');
 
 class SEOOptimizerAgent {
   constructor(db, credentials) {
@@ -72,7 +73,10 @@ class SEOOptimizerAgent {
           primaryKeyword: strategy.keywords[0],
           secondaryKeywords: strategy.keywords.slice(1, 5),
           targetLength: this.calculateOptimalLength(strategy.contentType),
-          language: 'en',
+          language: resolveContentLanguage({
+            language: script.language || strategy.language,
+            text: [script.title, strategy.topic].filter(Boolean).join(' ')
+          }).iso,
           category: this.selectCategory(strategy)
         },
         createdAt: new Date().toISOString()

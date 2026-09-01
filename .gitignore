@@ -6,12 +6,14 @@ yarn-error.log*
 
 # Environment variables and credentials
 .env
-.env.local
-.env.production
+.env.*
+!.env.example
 config/credentials.json
 config/tokens.json
 config/*.key
 config/*.pem
+*cookies*.txt
+*cookies*.json
 
 # API Keys and Secrets
 *.key
@@ -23,11 +25,16 @@ config/*.pem
 data/*.db
 data/*.sqlite
 data/*.db-journal
+data/*.db-shm
+data/*.db-wal
+*.db
+*.sqlite
 *.db-shm
 *.db-wal
 
 # Logs
-logs/
+logs/*
+!logs/.gitkeep
 *.log
 
 # Temporary files
@@ -81,9 +88,7 @@ backup/
 .cache/
 *.cache
 # Generated content outputs
-data/assets/
-data/audio/
-data/captions/
-data/scripts/
-data/videos/
-data/thumbnails/
+data/**
+!data/**/
+!data/.gitkeep
+!data/**/.gitkeep

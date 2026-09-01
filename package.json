@@ -10,6 +10,8 @@
     "growth:snapshot": "node scripts/growth/snapshot-github.js",
     "scheduler": "node schedules/daily-automation.js",
     "test": "node test.js",
+    "test:fonada": "node scripts/test-fonada-tts.js",
+    "test:fonada-asr": "node scripts/test-fonada-asr.js",
     "agent:strategy": "node agents/content-strategy-agent.js",
     "agent:script": "node agents/script-writer-agent.js",
     "agent:thumbnail": "node agents/thumbnail-designer-agent.js",
@@ -38,6 +40,7 @@
     "replicate": "^1.4.0",
     "sqlite3": "^5.1.6",
     "winston": "^3.11.0",
+    "ws": "^8.18.3",
     "sharp": "^0.33.0"
   },
   "optionalDependencies": {

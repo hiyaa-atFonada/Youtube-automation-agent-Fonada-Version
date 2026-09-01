@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>YouTube Automation Studio</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=sticky-nav">
 </head>
 <body>
   <div class="app-shell">
@@ -21,6 +21,7 @@
         <button class="nav-item" data-view="calendar"><span>□</span> Calendar & ideas</button>
         <button class="nav-item" data-view="analytics"><span>⌁</span> Analytics</button>
         <button class="nav-item" data-view="readiness"><span>✓</span> Production readiness</button>
+        <button class="nav-item" data-view="style"><span>🎤</span> Speaking style</button>
         <button class="nav-item" data-view="settings"><span>⚙</span> Channel setup</button>
       </nav>
       <div class="sidebar-footer">
@@ -90,6 +91,7 @@
               <label><span>Videos per planning run</span><input name="videosPerRun" type="number" min="1" max="5" value="1"></label>
               <label><span>Default format</span><select name="defaultFormat"><option value="explainer">Explainer</option><option value="tutorial">Tutorial</option><option value="list">List</option><option value="review">Review</option><option value="story">Story</option></select></label>
               <label><span>Default length</span><select name="defaultLength"><option value="short">Short · 2–4 min</option><option value="medium">Medium · 8–12 min</option><option value="long">Long · 15–20 min</option></select></label>
+              <label><span>Spoken language</span><select name="defaultLanguage"><option value="hi">Hindi</option><option value="en">English</option><option value="ta">Tamil</option><option value="te">Telugu</option></select></label>
               <label class="full-row"><span>Success metric</span><input name="successMetric" maxlength="300" placeholder="Qualified subscribers and returning viewers"></label>
               <label class="full-row"><span>Boundaries and constraints</span><textarea name="constraints" rows="3" maxlength="2000" placeholder="No hype, no unverified statistics, explain costs and tradeoffs."></textarea></label>
             </div>
@@ -168,14 +170,41 @@
 
       <section id="settings-view" class="view">
         <div class="section-intro"><div><h2>Channel setup</h2><p>These guardrails guide every agent in the pipeline.</p></div></div>
+        <form id="youtube-form" class="panel settings-form">
+          <div class="panel-heading">
+            <div><p class="eyebrow">YOUTUBE</p><h2>Connect a channel</h2></div>
+            <span id="youtube-status" class="status unverified">Not connected</span>
+          </div>
+          <p id="youtube-channel-line" class="meta-line">Save a Google OAuth client, then sign in. Generation still works without this.</p>
+          <div class="form-grid">
+            <label class="full-row"><span>OAuth Client ID</span><input name="clientId" maxlength="200" placeholder="123456789-abc.apps.googleusercontent.com" autocomplete="off"></label>
+            <label class="full-row"><span>OAuth Client Secret</span><input name="clientSecret" type="password" maxlength="200" placeholder="Paste secret — leave blank if already saved" autocomplete="off"></label>
+          </div>
+          <p class="callout">In <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Google Cloud Console</a>: enable YouTube Data API v3, create an OAuth client (Desktop app), add your Gmail as a test user, and allow this redirect URI: <code id="youtube-redirect-uri">http://127.0.0.1:3456/api/youtube/callback</code></p>
+          <div class="form-actions">
+            <button type="submit" class="button secondary">Save YouTube client</button>
+            <button id="youtube-connect-button" type="button" class="button primary">Connect Google account</button>
+            <button id="youtube-disconnect-button" type="button" class="button danger hidden">Disconnect</button>
+          </div>
+        </form>
         <form id="profile-form" class="panel settings-form">
           <div class="form-grid">
             <label><span>Channel name</span><input name="channelName" maxlength="120" required></label>
             <label><span>Default format</span><select name="defaultStyle"><option value="explainer">Explainer</option><option value="tutorial">Tutorial</option><option value="list">List</option><option value="review">Review</option><option value="story">Story</option></select></label>
+            <label><span>Spoken language</span><select name="defaultLanguage"><option value="hi">Hindi</option><option value="en">English</option><option value="ta">Tamil</option><option value="te">Telugu</option></select></label>
+            <label><span>Voice or share id</span><input name="defaultVoice" maxlength="80" placeholder="Paste your Fonada share_id or voice name"></label>
             <label class="full-row"><span>Channel goal</span><textarea name="goal" rows="2"></textarea></label>
             <label class="full-row"><span>Target audience</span><textarea name="targetAudience" rows="2"></textarea></label>
             <label><span>Brand voice</span><input name="brandVoice" placeholder="Clear, credible, engaging"></label>
-            <label><span>Timezone</span><input name="timezone" placeholder="America/Chicago"></label>
+            <label><span>Timezone</span>
+              <select name="timezone">
+                <option value="Asia/Kolkata">India · IST (Asia/Kolkata)</option>
+                <option value="Asia/Dubai">Gulf · GST (Asia/Dubai)</option>
+                <option value="Europe/London">UK · London</option>
+                <option value="America/New_York">US · Eastern</option>
+                <option value="America/Chicago">US · Central</option>
+              </select>
+            </label>
             <label class="full-row"><span>Default call to action</span><input name="callToAction"></label>
             <label class="full-row"><span>Visual direction</span><input name="visualStyle"></label>
             <label class="full-row"><span>Blocked topics or terms</span><input name="bannedTopics" placeholder="term one, term two"><small>Quality review blocks content containing these terms.</small></label>
@@ -185,6 +214,33 @@
             <label class="toggle"><input id="notifications-enabled" type="checkbox"><span></span> Save operator notifications</label>
           </div>
           <div class="form-actions"><button type="submit" class="button primary">Save channel setup</button><button id="api-key-button" type="button" class="button secondary">Set dashboard API key</button></div>
+        </form>
+      </section>
+
+      <section id="style-view" class="view">
+        <div class="section-intro"><div><h2>Speaking style</h2><p>Feed up to 5 YouTube videos. Fonada transcribes them and the next scripts copy that delivery.</p></div><span id="speaking-style-status" class="status unverified">Not learned</span></div>
+        <form id="speaking-style-form" class="panel settings-form">
+          <div class="panel-heading">
+            <div><p class="eyebrow">STYLE SOURCES</p><h2>Learn from YouTube videos</h2></div>
+          </div>
+          <p id="speaking-style-summary" class="meta-line">Paste your videos or inspiration. This does not clone a voice — it only shapes the written script.</p>
+          <div class="form-grid">
+            <label class="full-row"><span>Video 1</span><input name="url1" maxlength="300" placeholder="https://www.youtube.com/watch?v=…"></label>
+            <label class="full-row"><span>Video 2</span><input name="url2" maxlength="300" placeholder="Optional"></label>
+            <label class="full-row"><span>Video 3</span><input name="url3" maxlength="300" placeholder="Optional"></label>
+            <label class="full-row"><span>Video 4</span><input name="url4" maxlength="300" placeholder="Optional"></label>
+            <label class="full-row"><span>Video 5</span><input name="url5" maxlength="300" placeholder="Optional"></label>
+            <label><span>Spoken language for ASR</span><select name="language"><option value="hi">Hindi</option><option value="en">English</option><option value="ta">Tamil</option><option value="te">Telugu</option></select></label>
+          </div>
+          <div id="speaking-style-profile" class="style-profile"></div>
+          <div id="speaking-style-sources" class="idea-list"></div>
+          <p class="callout">Uses the first 8 minutes of each video. Your videos or someone else's inspiration both work.</p>
+          <div class="settings-row">
+            <label class="toggle"><input id="speaking-style-enabled" type="checkbox" checked><span></span> Use this style in the next scripts</label>
+          </div>
+          <div class="form-actions">
+            <button id="speaking-style-learn-button" type="submit" class="button primary">Learn speaking style</button>
+          </div>
         </form>
       </section>
     </main>
@@ -197,6 +253,8 @@
       <div class="form-grid two">
         <label><span>Format</span><select name="style"><option value="explainer">Explainer</option><option value="tutorial">Tutorial</option><option value="list">List</option><option value="review">Review</option><option value="story">Story</option></select></label>
         <label><span>Length</span><select name="length"><option value="short">Short · 2–4 min</option><option value="medium" selected>Medium · 8–12 min</option><option value="long">Long · 15–20 min</option></select></label>
+        <label><span>Spoken language</span><select name="language"><option value="hi">Hindi</option><option value="en">English</option><option value="ta">Tamil</option><option value="te">Telugu</option></select></label>
+        <label><span>Voice or share id</span><input name="voice" maxlength="80" placeholder="Paste your Fonada share_id or voice name"></label>
       </div>
       <p class="callout">Generation runs in the background. You can follow each stage and cancel between stages.</p>
       <div class="form-actions"><button type="submit" class="button primary">Start generation</button><button type="button" class="button ghost" data-close>Cancel</button></div>
@@ -218,6 +276,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js" defer></script>
+  <script src="/app.js?v=style-page" defer></script>
 </body>
 </html>

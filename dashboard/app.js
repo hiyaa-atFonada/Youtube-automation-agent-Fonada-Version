@@ -59,20 +59,48 @@ function empty(message) {
   return `<div class="empty">${escapeHTML(message)}</div>`;
 }
 
+function parseTimestamp(value) {
+  if (!value && value !== 0) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === 'number') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  const raw = String(value).trim();
+  if (!raw) return null;
+  // SQLite CURRENT_TIMESTAMP / datetime('now') is UTC with a space, no zone.
+  // Browsers parse that as local time, which makes IST look ~5 hours behind.
+  const sqliteUtc = raw.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/);
+  const date = new Date(sqliteUtc ? `${sqliteUtc[1]}T${sqliteUtc[2]}Z` : raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function formatDate(value, includeTime = true) {
   if (!value) return 'Not scheduled';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Not scheduled';
-  return new Intl.DateTimeFormat(undefined, {
+  const date = parseTimestamp(value);
+  if (!date) return 'Not scheduled';
+  const requested = ui.state?.profile?.timezone || 'Asia/Kolkata';
+  let timeZone = 'Asia/Kolkata';
+  try {
+    Intl.DateTimeFormat('en-IN', { timeZone: requested }).format(date);
+    timeZone = requested;
+  } catch (_error) {
+    timeZone = 'Asia/Kolkata';
+  }
+  return new Intl.DateTimeFormat('en-IN', {
     month: 'short', day: 'numeric',
-    ...(ui.state?.profile?.timezone ? { timeZone: ui.state.profile.timezone } : {}),
+    timeZone,
     ...(includeTime ? { hour: 'numeric', minute: '2-digit' } : {})
   }).format(date);
 }
 
 function timeAgo(value) {
   if (!value) return '';
-  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+  const date = parseTimestamp(value);
+  if (!date) return '';
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
   if (seconds < 60) return 'just now';
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
@@ -112,7 +140,16 @@ function renderDashboard() {
   const activeJobs = state.jobs.filter(job => ['queued', 'running'].includes(job.status));
 
   $('#brand-name').textContent = state.profile?.channel_name || 'Automation Studio';
-  $('#setup-banner').classList.toggle('hidden', !state.system.setupRequired);
+  const banner = $('#setup-banner');
+  if (state.system.setupRequired) {
+    banner.classList.remove('hidden');
+    banner.innerHTML = '<div><strong>Finish setup to activate your agents</strong><p>The operator console is ready, but generation stays disabled until an AI provider is configured.</p></div><code>npm run walkthrough</code>';
+  } else if (!state.system.youtubeReady) {
+    banner.classList.remove('hidden');
+    banner.innerHTML = '<div><strong>YouTube is optional until upload</strong><p>Generate, review, and export videos locally. Connect YouTube in Channel setup when you want to publish.</p></div><button class="text-button" data-go="settings">Open Channel setup →</button>';
+  } else {
+    banner.classList.add('hidden');
+  }
   $('#system-label').textContent = state.system.setupRequired
     ? 'Setup required'
     : state.system.automationPaused ? 'Automation paused' : `${state.system.agents.length} agents online`;
@@ -128,6 +165,9 @@ function renderDashboard() {
   $('#stat-published').textContent = state.stats.published || 0;
   $('#stat-score').textContent = state.analytics.averagePerformanceScore ? `${state.analytics.averagePerformanceScore}/100` : '—';
 
+  fillSpokenLanguageSelects();
+  renderYouTubeSettings(state.youtube || {});
+  renderSpeakingStyle(state.speakingStyle || {});
   renderReviews(reviews);
   renderJobs(activeJobs.length ? activeJobs : state.jobs.slice(0, 5));
   renderSchedule(state.schedule.slice(0, 5), '#next-schedule');
@@ -355,7 +395,7 @@ function renderActivation(activation = {}) {
 
 function renderOperator(strategy, runs, system) {
   const form = $('#strategy-form');
-  const mapping = strategy ? {
+  const mapping = !isFormDirty(form) && strategy ? {
     objective: strategy.objective,
     audience: strategy.audience,
     valueProposition: strategy.value_proposition,
@@ -364,6 +404,7 @@ function renderOperator(strategy, runs, system) {
     videosPerRun: strategy.videos_per_run,
     defaultFormat: strategy.default_format,
     defaultLength: strategy.default_length,
+    defaultLanguage: strategy.default_language || 'hi',
     successMetric: strategy.success_metric,
     constraints: strategy.constraints
   } : {};
@@ -411,17 +452,145 @@ function renderOperator(strategy, runs, system) {
   }).join('') : empty('Research and planning will appear here when the run begins.');
 }
 
+function isFormDirty(form) {
+  return Boolean(form?.dataset.dirty);
+}
+
+function markFormDirty(event) {
+  event.currentTarget.dataset.dirty = '1';
+}
+
+function clearFormDirty(form) {
+  if (form) delete form.dataset.dirty;
+}
+
+function fillSpokenLanguageSelects() {
+  const languages = ui.state?.spokenLanguages;
+  if (!Array.isArray(languages) || languages.length === 0) return;
+  $$('select[name="language"], select[name="defaultLanguage"]').forEach(select => {
+    if (isFormDirty(select.form) || document.activeElement === select) return;
+    const current = select.value;
+    select.innerHTML = languages.map(language =>
+      `<option value="${escapeHTML(language.iso)}">${escapeHTML(language.name)}</option>`
+    ).join('');
+    if (languages.some(language => language.iso === current)) select.value = current;
+  });
+}
+
+function renderYouTubeSettings(youtube = {}) {
+  const form = $('#youtube-form');
+  const status = $('#youtube-status');
+  const line = $('#youtube-channel-line');
+  const disconnect = $('#youtube-disconnect-button');
+  const redirect = $('#youtube-redirect-uri');
+  if (!form || !status) return;
+
+  status.textContent = youtube.connected ? 'Connected' : youtube.configured ? 'Client saved' : 'Not connected';
+  status.className = `status ${youtube.connected ? 'published' : youtube.configured ? 'queued' : 'unverified'}`;
+  disconnect.classList.toggle('hidden', !youtube.connected);
+  if (redirect) {
+    redirect.textContent = youtube.redirectUri || 'http://127.0.0.1:3456/api/youtube/callback';
+  }
+
+  if (youtube.channel?.title) {
+    line.textContent = `Publishing as ${youtube.channel.title}${youtube.channel.subscribers ? ` · ${youtube.channel.subscribers} subscribers` : ''}`;
+  } else if (youtube.connected) {
+    line.textContent = 'Google account is connected. Approving a video will upload to that channel.';
+  } else if (youtube.configured) {
+    line.textContent = 'Client is saved. Click Connect Google account to finish sign-in.';
+  } else {
+    line.textContent = 'Save a Google OAuth client, then sign in. Generation still works without this.';
+  }
+
+  if (!isFormDirty(form) && document.activeElement !== form.elements.clientId) {
+    form.elements.clientId.placeholder = youtube.clientIdMasked
+      ? `Saved: ${youtube.clientIdMasked}`
+      : '123456789-abc.apps.googleusercontent.com';
+  }
+}
+
+function renderSpeakingStyle(style = {}) {
+  const form = $('#speaking-style-form');
+  const status = $('#speaking-style-status');
+  const summary = $('#speaking-style-summary');
+  const profileBox = $('#speaking-style-profile');
+  const sourcesBox = $('#speaking-style-sources');
+  const learn = $('#speaking-style-learn-button');
+  const enabled = $('#speaking-style-enabled');
+  if (!form || !status) return;
+
+  const job = style.job || {};
+  const profile = style.profile;
+  const running = job.status === 'running';
+  status.textContent = running
+    ? 'Learning'
+    : job.status === 'failed'
+      ? 'Failed'
+      : profile
+        ? 'Learned'
+        : 'Not learned';
+  status.className = `status ${running ? 'queued' : job.status === 'failed' ? 'failed' : profile ? 'published' : 'unverified'}`;
+  if (learn) {
+    learn.disabled = running;
+    learn.textContent = running ? 'Learning from videos…' : 'Learn speaking style';
+  }
+  if (enabled && document.activeElement !== enabled) {
+    enabled.checked = style.enabled !== false;
+  }
+
+  if (job.status === 'failed' && job.error) {
+    summary.textContent = job.error;
+  } else if (running) {
+    summary.textContent = job.message || 'Fonada is transcribing the videos. This can take a few minutes.';
+  } else if (profile) {
+    summary.textContent = `Style from ${profile.sourceVideoCount || style.sources?.length || 0} video(s). Next scripts will follow this delivery.`;
+  } else {
+    summary.textContent = 'Paste your videos or inspiration. Fonada transcribes them and the next scripts copy that delivery.';
+  }
+
+  if (profileBox) {
+    profileBox.innerHTML = profile
+      ? [
+        profile.openingStyle && `<p><strong>Opening</strong> · ${escapeHTML(profile.openingStyle)}</p>`,
+        profile.sentenceRhythm && `<p><strong>Rhythm</strong> · ${escapeHTML(profile.sentenceRhythm)}</p>`,
+        profile.energy && `<p><strong>Energy</strong> · ${escapeHTML(profile.energy)}</p>`,
+        profile.vocabulary && `<p><strong>Vocabulary</strong> · ${escapeHTML(profile.vocabulary)}</p>`,
+        profile.ctaStyle && `<p><strong>CTA</strong> · ${escapeHTML(profile.ctaStyle)}</p>`
+      ].filter(Boolean).join('')
+      : '';
+  }
+
+  if (sourcesBox) {
+    const sources = style.sources || [];
+    sourcesBox.innerHTML = sources.map(source =>
+      `<article class="idea-card"><strong>${escapeHTML(source.title || source.videoId || 'Video')}</strong><div class="meta-line">${escapeHTML(source.language || '')}${source.durationSeconds ? ` · ${Math.round(source.durationSeconds)}s` : ''}</div><p>${escapeHTML(source.excerpt || '')}</p></article>`
+    ).join('');
+  }
+
+  if (!isFormDirty(form) && job.urls?.length) {
+    job.urls.slice(0, 5).forEach((url, index) => {
+      const field = form.elements[`url${index + 1}`];
+      if (field && document.activeElement !== field && !field.value) field.value = url;
+    });
+  }
+}
+
 function populateSettings(profile = {}, settings = {}) {
   const form = $('#profile-form');
+  if (isFormDirty(form)) return;
   const mapping = {
     channelName: profile.channel_name,
     goal: profile.goal,
     targetAudience: profile.target_audience,
     brandVoice: profile.brand_voice,
     defaultStyle: profile.default_style,
+    defaultLanguage: profile.default_language || 'hi',
+    defaultVoice: profile.default_voice || '',
     callToAction: profile.call_to_action,
     visualStyle: profile.visual_style,
-    timezone: profile.timezone,
+    timezone: /^(indian|india|ist|asia\/kolkata|asia\/calcutta)?$/i.test(String(profile.timezone || '').trim())
+      ? 'Asia/Kolkata'
+      : (profile.timezone || 'Asia/Kolkata'),
     bannedTopics: (profile.bannedTopics || []).join(', ')
   };
   for (const [name, value] of Object.entries(mapping)) {
@@ -442,6 +611,7 @@ function switchView(view) {
     calendar: ['EDITORIAL PLANNING', 'Plan before you generate.'],
     analytics: ['PERFORMANCE', 'Turn results into the next move.'],
     readiness: ['PRODUCTION READINESS', 'Verify before autonomy runs.'],
+    style: ['SPEAKING STYLE', 'Learn delivery from YouTube videos.'],
     settings: ['CHANNEL GUARDRAILS', 'Make every agent sound like you.']
   };
   $('#view-eyebrow').textContent = titles[view][0];
@@ -605,7 +775,14 @@ document.addEventListener('change', event => {
   }
 });
 
-$('#generate-button').addEventListener('click', () => $('#generate-dialog').showModal());
+$('#generate-button').addEventListener('click', () => {
+  const language = ui.state?.profile?.default_language || ui.state?.channelStrategy?.default_language || 'hi';
+  const select = $('#generate-form [name="language"]');
+  if (select) select.value = language;
+  const voice = $('#generate-form [name="voice"]');
+  if (voice && document.activeElement !== voice) voice.value = ui.state?.profile?.default_voice || '';
+  $('#generate-dialog').showModal();
+});
 $('#add-idea-button').addEventListener('click', () => $('#idea-dialog').showModal());
 $('#refresh-button').addEventListener('click', () => refreshDashboard());
 $('#pipeline-filter').addEventListener('change', () => renderPipeline(ui.state?.pipeline || []));
@@ -643,7 +820,10 @@ function strategyFormData(status = ui.state?.channelStrategy?.status || 'draft')
 
 $('#strategy-form').addEventListener('submit', async event => {
   event.preventDefault();
-  await mutate('/api/operator/strategy', 'PUT', strategyFormData(), 'Channel strategy saved.').catch(() => {});
+  try {
+    await mutate('/api/operator/strategy', 'PUT', strategyFormData(), 'Channel strategy saved.');
+    clearFormDirty(event.currentTarget);
+  } catch (_error) { /* toast already shown */ }
 });
 
 $('#activate-operator-button').addEventListener('click', async () => {
@@ -666,7 +846,13 @@ $('#generate-form').addEventListener('submit', async event => {
   event.preventDefault();
   const values = Object.fromEntries(new FormData(event.currentTarget));
   try {
-    await mutate('/generate', 'POST', { ...values, topic: values.topic.trim() || null }, 'Generation job started.');
+    await mutate('/generate', 'POST', {
+      topic: values.topic.trim() || null,
+      style: values.style,
+      length: values.length,
+      language: values.language,
+      voice: String(values.voice || '').trim() || null
+    }, 'Generation job started.');
     $('#generate-dialog').close();
     event.currentTarget.reset();
   } catch (_error) { /* toast already shown */ }
@@ -682,12 +868,96 @@ $('#idea-form').addEventListener('submit', async event => {
   } catch (_error) { /* toast already shown */ }
 });
 
+$('#speaking-style-form').addEventListener('input', markFormDirty);
+$('#speaking-style-form').addEventListener('change', markFormDirty);
+$('#speaking-style-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const values = Object.fromEntries(new FormData(event.currentTarget));
+  const urls = ['url1', 'url2', 'url3', 'url4', 'url5']
+    .map(name => String(values[name] || '').trim())
+    .filter(Boolean);
+  try {
+    await mutate('/api/speaking-style/learn', 'POST', {
+      urls,
+      language: values.language
+    }, 'Learning speaking style from those videos…');
+    clearFormDirty(event.currentTarget);
+  } catch (_error) { /* toast already shown */ }
+});
+
+$('#speaking-style-enabled').addEventListener('change', async event => {
+  await mutate('/api/speaking-style', 'PUT', { enabled: event.currentTarget.checked },
+    event.currentTarget.checked ? 'Next scripts will use the learned style.' : 'Speaking style turned off for new scripts.'
+  ).catch(() => {});
+});
+
+$('#youtube-form').addEventListener('input', markFormDirty);
+$('#youtube-form').addEventListener('change', markFormDirty);
+$('#youtube-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const values = Object.fromEntries(new FormData(event.currentTarget));
+  try {
+    await mutate('/api/youtube', 'PUT', {
+      clientId: String(values.clientId || '').trim(),
+      clientSecret: String(values.clientSecret || '').trim()
+    }, 'YouTube client saved.');
+    event.currentTarget.elements.clientSecret.value = '';
+    clearFormDirty(event.currentTarget);
+  } catch (_error) { /* toast already shown */ }
+});
+
+$('#youtube-connect-button').addEventListener('click', async () => {
+  try {
+    const form = $('#youtube-form');
+    const clientId = String(form.elements.clientId.value || '').trim();
+    const clientSecret = String(form.elements.clientSecret.value || '').trim();
+    if (clientId && clientSecret) {
+      await api('/api/youtube', { method: 'PUT', body: JSON.stringify({ clientId, clientSecret }) });
+      form.elements.clientSecret.value = '';
+      clearFormDirty(form);
+    }
+    const result = await api('/api/youtube/connect', { method: 'POST', body: '{}' });
+    if (!result.authUrl) throw new Error('Google did not return a sign-in URL');
+    window.open(result.authUrl, 'youtube-oauth', 'width=520,height=720');
+    showToast('Finish Google sign-in in the popup, then return here.');
+    const started = Date.now();
+    while (Date.now() - started < 180000) {
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      const status = await api('/api/youtube');
+      if (status.connected) {
+        if (ui.state) {
+          ui.state.youtube = status;
+          ui.state.system.youtubeReady = true;
+        }
+        renderYouTubeSettings(status);
+        showToast('YouTube connected.');
+        return;
+      }
+    }
+    showToast('Still waiting. Refresh Channel setup after you approve access.', 'error');
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+});
+
+$('#youtube-disconnect-button').addEventListener('click', async () => {
+  if (!confirm('Disconnect YouTube from this operator? Uploads will stop until you connect again.')) return;
+  await mutate('/api/youtube/disconnect', 'POST', {}, 'YouTube disconnected.').catch(() => {});
+});
+
+$('#profile-form').addEventListener('input', markFormDirty);
+$('#profile-form').addEventListener('change', markFormDirty);
+$('#strategy-form').addEventListener('input', markFormDirty);
+$('#strategy-form').addEventListener('change', markFormDirty);
+
 $('#profile-form').addEventListener('submit', async event => {
   event.preventDefault();
   const values = Object.fromEntries(new FormData(event.currentTarget));
   values.bannedTopics = values.bannedTopics.split(',').map(value => value.trim()).filter(Boolean);
+  values.defaultVoice = String(values.defaultVoice || '').trim();
   try {
     await mutate('/api/profile', 'PUT', values, 'Channel setup saved.');
+    clearFormDirty(event.currentTarget);
     await mutate('/api/settings', 'PUT', {
       approval_required: $('#approval-required').checked,
       notification_enabled: $('#notifications-enabled').checked,
@@ -701,6 +971,6 @@ $('#api-key-button').addEventListener('click', () => {
 });
 
 const initialView = location.hash.slice(1);
-if (['overview', 'operator', 'pipeline', 'calendar', 'analytics', 'readiness', 'settings'].includes(initialView)) switchView(initialView);
+if (['overview', 'operator', 'pipeline', 'calendar', 'analytics', 'readiness', 'style', 'settings'].includes(initialView)) switchView(initialView);
 refreshDashboard();
 setInterval(() => refreshDashboard(true), 8000);

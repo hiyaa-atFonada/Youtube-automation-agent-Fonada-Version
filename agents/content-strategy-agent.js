@@ -48,7 +48,11 @@ class ContentStrategyAgent {
   }
 
   async fetchYouTubeTrends() {
-    // Use YouTube API to fetch trending videos
+    if (!this.credentials.hasYouTubeUpload?.()) {
+      this.logger.warn('Skipping YouTube trends — no YouTube credentials. Using evergreen topics until upload is configured.');
+      return [];
+    }
+
     const youtube = this.credentials.getYouTubeClient();
     
     try {
@@ -97,6 +101,10 @@ class ContentStrategyAgent {
   }
 
   async getChannelVideos(channelId) {
+    if (!this.credentials.hasYouTubeUpload?.()) {
+      return [];
+    }
+
     const youtube = this.credentials.getYouTubeClient();
     
     try {

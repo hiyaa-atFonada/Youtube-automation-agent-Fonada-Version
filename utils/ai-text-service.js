@@ -46,6 +46,19 @@ const PROVIDERS = {
   },
 };
 
+function supportsCustomTemperature(model) {
+  const id = String(model || '').toLowerCase();
+  return !/gpt-5/.test(id) && !/(^|\/)o[1-9]/.test(id) && !/^gemini-3\.(?:[5-9]|\d{2,})-/.test(id);
+}
+
+function isUnsupportedTemperatureError(error) {
+  return Boolean(
+    error &&
+    error.status === 400 &&
+    /temperature/i.test(error.message || '')
+  );
+}
+
 class AITextService {
   constructor(credentials = {}) {
     this.logger = new Logger('AITextService');
@@ -107,7 +120,7 @@ class AITextService {
 
     if (this.gemini) {
       const config = { maxOutputTokens: maxTokens };
-      if (!/^gemini-3\.(?:[5-9]|\d{2,})-/.test(model)) config.temperature = temperature;
+      if (supportsCustomTemperature(model)) config.temperature = temperature;
       const response = await this.gemini.models.generateContent({
         model,
         contents: prompt,
@@ -128,18 +141,29 @@ class AITextService {
 
     const params = {
       model,
-      messages: [{ role: 'user', content: prompt }],
-      temperature,
+      messages: [{ role: 'user', content: prompt }]
     };
+    if (supportsCustomTemperature(model)) params.temperature = temperature;
 
+    try {
+      return this._extractContent(await this._createChatCompletion(params, maxTokens));
+    } catch (error) {
+      if (isUnsupportedTemperatureError(error) && params.temperature !== undefined) {
+        delete params.temperature;
+        return this._extractContent(await this._createChatCompletion(params, maxTokens));
+      }
+      throw error;
+    }
+  }
+
+  async _createChatCompletion(params, maxTokens) {
     try {
       // Newer OpenAI models (gpt-5.x and later) reject the legacy max_tokens
       // parameter with a 400 error and require max_completion_tokens instead.
-      const response = await this.client.chat.completions.create({
+      return await this.client.chat.completions.create({
         ...params,
         max_completion_tokens: maxTokens,
       });
-      return this._extractContent(response);
     } catch (error) {
       // Older models and some providers reject max_completion_tokens with a 400;
       // retry the same request using the legacy max_tokens spelling.
@@ -148,11 +172,10 @@ class AITextService {
         error.status === 400 &&
         /max(_completion)?_tokens/i.test(error.message || '')
       ) {
-        const response = await this.client.chat.completions.create({
+        return this.client.chat.completions.create({
           ...params,
           max_tokens: maxTokens,
         });
-        return this._extractContent(response);
       }
       throw error;
     }

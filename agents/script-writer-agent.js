@@ -1,5 +1,7 @@
 const { Logger } = require('../utils/logger');
 const { AITextService } = require('../utils/ai-text-service');
+const { resolveContentLanguage } = require('../utils/fonada-tts');
+const { formatSpeakingStyleForPrompt } = require('../utils/speaking-style-service');
 
 class ScriptWriterAgent {
   constructor(db, credentials) {
@@ -77,6 +79,9 @@ class ScriptWriterAgent {
         duration: this.estimateDuration(mainContent),
         tone: template.tone,
         pacing: template.pacing,
+        language: resolveContentLanguage({
+          language: strategy.language || strategy.contentLanguage
+        }).iso,
         keywords: strategy.keywords,
         metadata: {
           strategy: strategy,
@@ -99,19 +104,37 @@ class ScriptWriterAgent {
     }
   }
 
+  async resolveSpeakingStyle(strategy = {}) {
+    if (strategy.speakingStyleProfile) {
+      return strategy.speakingStyleProfile;
+    }
+    if (this.db?.getSpeakingStyleProfile) {
+      return this.db.getSpeakingStyleProfile();
+    }
+    return null;
+  }
+
   async generateScriptWithAI(strategy, template) {
     if (!this.aiTextService.isAvailable()) {
       this.logger.info('Using template script generation because no AI text provider is configured');
       return null;
     }
 
+    const language = resolveContentLanguage({
+      language: strategy.language || strategy.contentLanguage,
+      text: [strategy.topic, strategy.angle, strategy.targetAudience].filter(Boolean).join(' ')
+    });
+    const speakingStyle = await this.resolveSpeakingStyle(strategy);
+    const styleBlock = formatSpeakingStyleForPrompt(speakingStyle);
+    const lengthKey = strategy.requestedLengthKey || this.inferLengthKey(strategy.requestedLength);
+    const lengthBrief = this.lengthBriefFor(lengthKey, strategy.requestedLength);
     const prompt = `You are writing a YouTube script plan.
 Return only valid JSON with this exact shape:
 {
   "title": "compelling title under 100 characters",
   "hook": "opening hook in one sentence",
   "sections": [
-    { "title": "section title", "content": ["spoken script bullet"], "duration": 60 }
+    { "title": "section title", "content": ["full spoken paragraph the host says aloud"], "duration": 60 }
   ],
   "cta": "clear call to action"
 }
@@ -120,7 +143,9 @@ Topic: ${strategy.topic}
 Style/content type: ${strategy.contentType}
 Angle: ${strategy.angle}
 Target audience: ${strategy.targetAudience}
-Desired length: ${strategy.requestedLength || process.env.DEFAULT_VIDEO_LENGTH || '8-12 minutes'}
+Desired length: ${lengthBrief}
+Spoken language: ${language.name}. Write the title, hook, section titles, spoken paragraphs, and CTA entirely in ${language.name}.
+Each content item must be a full spoken paragraph (2-4 sentences), not a short outline bullet. Do not summarize the video into a few headlines — write the words the host will actually say.
 Tone: ${template.tone}
 Pacing: ${template.pacing}
 Brand voice: ${strategy.brandVoice || 'clear, credible, and engaging'}
@@ -130,11 +155,12 @@ Editorial rationale: ${strategy.planRationale || 'fit the selected topic and aud
 Channel constraints: ${strategy.channelConstraints || 'none beyond the factual-safety rules below'}
 Preferred call to action: ${strategy.callToAction || 'invite the viewer to subscribe'}
 Keywords: ${(strategy.keywords || []).join(', ')}
+${styleBlock ? `\nCreator speaking style (from Fonada ASR of recent videos):\n${styleBlock}\n` : ''}
 Avoid fabricated statistics, unsupported claims, and fake urgency.`;
 
     try {
       const response = await this.aiTextService.generateText(prompt, {
-        maxTokens: 1800,
+        maxTokens: this.tokenBudgetForLength(lengthKey),
         temperature: 0.7
       });
       const parsed = this.parseAIJsonResponse(response);
@@ -158,12 +184,15 @@ Avoid fabricated statistics, unsupported claims, and fake urgency.`;
         duration: this.estimateDuration({ sections }),
         tone: template.tone,
         pacing: template.pacing,
+        language: language.iso,
         keywords: strategy.keywords || [],
         metadata: {
           strategy,
           generatedAt: new Date().toISOString(),
           version: '1.0',
-          generationSource: 'ai'
+          generationSource: 'ai',
+          language: language.iso,
+          speakingStyleUsed: Boolean(styleBlock)
         }
       };
     } catch (error) {
@@ -205,7 +234,7 @@ Avoid fabricated statistics, unsupported claims, and fake urgency.`;
     }
 
     return sections
-      .slice(0, 8)
+      .slice(0, this.sectionLimitFor(strategy))
       .map((section, index) => {
         const rawContent = Array.isArray(section.content)
           ? section.content
@@ -759,6 +788,36 @@ Avoid fabricated statistics, unsupported claims, and fake urgency.`;
 
   calculateSectionsDuration(sections) {
     return sections.reduce((total, section) => total + (section.duration || 60), 0);
+  }
+
+  inferLengthKey(requestedLength) {
+    const label = String(requestedLength || '');
+    if (/15-20|long/i.test(label)) return 'long';
+    if (/8-12|medium/i.test(label)) return 'medium';
+    if (/2-4|2-5|short/i.test(label)) return 'short';
+    return 'medium';
+  }
+
+  lengthBriefFor(lengthKey, requestedLength) {
+    const briefs = {
+      short: '2-4 minutes. Write 4-6 sections totaling 350-600 spoken words so the narration fills the full short runtime.',
+      medium: '8-12 minutes. Write 6-8 sections totaling 1200-1800 spoken words.',
+      long: '15-20 minutes. Write 8-10 sections totaling 2200-3000 spoken words.'
+    };
+    return briefs[lengthKey] || requestedLength || briefs.medium;
+  }
+
+  tokenBudgetForLength(lengthKey) {
+    if (lengthKey === 'long') return 6500;
+    if (lengthKey === 'medium') return 4500;
+    return 2800;
+  }
+
+  sectionLimitFor(strategy = {}) {
+    const lengthKey = strategy.requestedLengthKey || this.inferLengthKey(strategy.requestedLength);
+    if (lengthKey === 'long') return 10;
+    if (lengthKey === 'medium') return 8;
+    return 6;
   }
 }
 

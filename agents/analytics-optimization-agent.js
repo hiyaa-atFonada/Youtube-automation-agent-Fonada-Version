@@ -21,14 +21,17 @@ class AnalyticsOptimizationAgent {
   }
 
   async setupAnalyticsAPI() {
+    if (!this.credentials.hasYouTubeUpload()) {
+      this.logger.warn('YouTube Analytics skipped — connect YouTube after local testing to pull channel stats.');
+      return;
+    }
     try {
       const auth = this.credentials.getYouTubeAuth();
       this.youtubeAnalytics = google.youtubeAnalytics({ version: 'v2', auth });
       this.youtube = google.youtube({ version: 'v3', auth });
       this.logger.info('YouTube Analytics API initialized');
     } catch (error) {
-      this.logger.error('Failed to initialize Analytics API:', error);
-      throw error;
+      this.logger.warn(`YouTube Analytics is unavailable: ${error.message}`);
     }
   }
 

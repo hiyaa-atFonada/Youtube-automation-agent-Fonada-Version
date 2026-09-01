@@ -1,19 +1,41 @@
 const OpenAI = require('openai');
 const Replicate = require('replicate');
+const FormData = require('form-data');
 const fs = require('fs').promises;
 const path = require('path');
 const { pathToFileURL } = require('url');
 const axios = require('axios');
 const { Logger } = require('./logger');
-const { runFFmpeg, checkFFmpeg, ffmpegInstallHint } = require('./ffmpeg');
+const { runFFmpeg, checkFFmpeg, getMediaDuration, ffmpegInstallHint } = require('./ffmpeg');
+const {
+  FONADA_CLONE_ENDPOINT,
+  FONADA_V1_ENDPOINT,
+  V1_MAX_CHARS,
+  CLONE_MAX_CHARS,
+  chunkTextForTTS,
+  defaultVoiceForLanguage,
+  isKloneCatalogVoice,
+  isV1OnlyModel,
+  parseFonadaError,
+  resolveFonadaLanguage
+} = require('./fonada-tts');
+
+function unwrapCredentials(credentials) {
+  const nested = credentials?.credentials && typeof credentials.credentials === 'object'
+    ? credentials.credentials
+    : {};
+  return { ...nested, ...(credentials || {}) };
+}
 
 class AIVideoGenerator {
-  constructor(credentials) {
+  constructor(credentials = {}) {
     this.logger = new Logger('AIVideoGenerator');
+    this.lastNarration = null;
+    const creds = unwrapCredentials(credentials);
     
     // Initialize AI services with graceful fallback
-    const openaiKey = credentials.openai?.apiKey || process.env.OPENAI_API_KEY;
-    const replicateKey = credentials.replicate?.apiKey || process.env.REPLICATE_API_KEY;
+    const openaiKey = creds.openai?.apiKey || process.env.OPENAI_API_KEY;
+    const replicateKey = creds.replicate?.apiKey || process.env.REPLICATE_API_KEY;
     
     if (openaiKey) {
       this.openai = new OpenAI({ apiKey: openaiKey });
@@ -30,7 +52,7 @@ class AIVideoGenerator {
     }
 
     // Gemini media generation (images + native TTS) — free-tier alternative to OpenAI
-    const geminiKey = credentials.gemini?.apiKey || process.env.GEMINI_API_KEY;
+    const geminiKey = creds.gemini?.apiKey || process.env.GEMINI_API_KEY;
     if (geminiKey) {
       try {
         const { GoogleGenAI } = require('@google/genai');
@@ -40,40 +62,270 @@ class AIVideoGenerator {
         this.logger.warn('Failed to initialize Gemini media service:', error.message);
       }
     }
+
+    const fonada = creds.fonada || {};
+    this.fonadaApiKey = fonada.apiKey || process.env.FONADA_API_KEY;
+    this.fonadaVoice = fonada.voice || process.env.FONADA_VOICE;
+    this.fonadaLanguage = fonada.language;
+    this.fonadaShareId = fonada.shareId || process.env.FONADA_SHARE_ID;
+    this.fonadaModel = fonada.model || process.env.FONADA_TTS_MODEL || 'auto';
     
-    // ElevenLabs configuration
-    this.elevenLabsApiKey = credentials.elevenLabs?.apiKey || process.env.ELEVENLABS_API_KEY;
-    this.elevenLabsVoiceId = credentials.elevenLabs?.voiceId || process.env.ELEVENLABS_VOICE_ID;
+    // Legacy ElevenLabs configuration (kept as a last live fallback)
+    this.elevenLabsApiKey = creds.elevenLabs?.apiKey || process.env.ELEVENLABS_API_KEY;
+    this.elevenLabsVoiceId = creds.elevenLabs?.voiceId || process.env.ELEVENLABS_VOICE_ID;
     
     // Azure Speech configuration
-    this.azureSpeechKey = credentials.azure?.speechKey || process.env.AZURE_SPEECH_KEY;
-    this.azureSpeechRegion = credentials.azure?.speechRegion || process.env.AZURE_SPEECH_REGION;
+    this.azureSpeechKey = creds.azure?.speechKey || creds.azureSpeech?.subscriptionKey || process.env.AZURE_SPEECH_KEY;
+    this.azureSpeechRegion = creds.azure?.speechRegion || creds.azureSpeech?.region || process.env.AZURE_SPEECH_REGION;
+
+    if (this.fonadaApiKey) {
+      this.logger.info('Fonada TTS service initialized');
+    }
   }
 
-  async generateTTSAudio(text, outputPath) {
+  resolveNarrationLanguage(text, explicit) {
+    return resolveFonadaLanguage({
+      explicit,
+      text,
+      fallback: this.fonadaLanguage || 'English'
+    });
+  }
+
+  resolveSelectedVoice(options = {}) {
+    return options.voiceRecord || null;
+  }
+
+  async generateTTSAudio(text, outputPath, options = {}) {
     this.logger.info('Generating TTS audio...');
-    
+    const language = this.resolveNarrationLanguage(text, options.language);
+    const selectedVoice = this.resolveSelectedVoice(options);
+
+    const attempts = [];
+    if (this.canUseFonadaClone(options, selectedVoice)) {
+      attempts.push({
+        provider: 'fonada-klone',
+        run: () => this.generateFonadaCloneTTS(text, outputPath, language, options)
+      });
+    }
+    if (this.canUseFonadaV1()) {
+      attempts.push({
+        provider: 'fonada-v1',
+        run: () => this.generateFonadaV1TTS(text, outputPath, language, options)
+      });
+    }
+    if (this.openai) {
+      attempts.push({ provider: 'openai', run: () => this.generateOpenAITTS(text, outputPath) });
+    }
+    if (this.gemini) {
+      attempts.push({ provider: 'gemini', run: () => this.generateGeminiTTS(text, outputPath) });
+    }
+    if (this.elevenLabsApiKey && this.elevenLabsVoiceId) {
+      attempts.push({ provider: 'elevenlabs', run: () => this.generateElevenLabsTTS(text, outputPath) });
+    }
+
+    let lastError = null;
+    for (const attempt of attempts) {
+      try {
+        const resultPath = await attempt.run();
+        this.lastNarration = { path: resultPath, provider: attempt.provider, language };
+        this.logger.info(`TTS generation complete via ${attempt.provider} (${language.name})`);
+        return resultPath;
+      } catch (error) {
+        lastError = error;
+        this.logger.warn(`${attempt.provider} TTS failed, trying next provider: ${error.message}`);
+      }
+    }
+
+    if (lastError) {
+      this.logger.error('All live TTS providers failed; using silent simulation:', lastError);
+    }
+    const resultPath = await this.simulateTTSGeneration(text, outputPath);
+    this.lastNarration = { path: resultPath, provider: 'simulated', language };
+    return resultPath;
+  }
+
+  resolveCloneShareId(options = {}, selectedVoice = null) {
+    if (options.shareId) return options.shareId;
+    if (selectedVoice?.source === 'clone' && selectedVoice.voiceId && selectedVoice.voiceId !== 'clone') {
+      return selectedVoice.voiceId;
+    }
+    return this.fonadaShareId;
+  }
+
+  canUseFonadaClone(options = {}, selectedVoice = null) {
+    const shareId = this.resolveCloneShareId(options, selectedVoice);
+    if (!this.fonadaApiKey || !shareId || isV1OnlyModel(this.fonadaModel)) return false;
+    if (selectedVoice?.source === 'v1') return false;
+    return !selectedVoice || isKloneCatalogVoice(selectedVoice);
+  }
+
+  canUseFonadaV1() {
+    return Boolean(this.fonadaApiKey);
+  }
+
+  async requestFonada(requestFn) {
+    const maxAttempts = 3;
+    let response;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      response = await requestFn();
+      if (response.status !== 429 || attempt === maxAttempts) {
+        return response;
+      }
+
+      const retryAfter = Number(response.headers?.['retry-after'] || 6);
+      const waitMs = Math.max(1, Number.isFinite(retryAfter) ? retryAfter : 6) * 1000;
+      this.logger.warn(`Fonada rate limited (429), retrying in ${waitMs}ms`);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
+
+    return response;
+  }
+
+  async generateFonadaV1TTS(text, outputPath, language, options = {}) {
+    const resolved = language || this.resolveNarrationLanguage(text, options.language);
+    if (!resolved.v1Supported) {
+      this.logger.warn(`Fonada V1 does not support ${resolved.name}; using English pronunciation`);
+    }
+
+    const selectedVoice = this.resolveSelectedVoice(options);
+    const requestedVoice = selectedVoice?.source === 'v1'
+      ? selectedVoice.voiceId
+      : (selectedVoice ? null : options.voice);
+    const voice = requestedVoice || this.fonadaVoice || defaultVoiceForLanguage(resolved);
+    const chunks = chunkTextForTTS(text, V1_MAX_CHARS);
+    if (chunks.length === 0) {
+      throw new Error('Fonada V1 received empty narration text');
+    }
+
+    this.logger.info(`Generating Fonada V1 TTS (${resolved.v1}, voice ${voice}, ${chunks.length} chunk${chunks.length === 1 ? '' : 's'})`);
+
+    const chunkPaths = [];
     try {
-      // Try ElevenLabs first (higher quality)
-      if (this.elevenLabsApiKey && this.elevenLabsVoiceId) {
-        return await this.generateElevenLabsTTS(text, outputPath);
-      }
-      
-      // Fallback to OpenAI TTS
-      if (this.openai) {
-        return await this.generateOpenAITTS(text, outputPath);
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkPath = `${outputPath}.fonada-v1-${i}.mp3`;
+        const response = await this.requestFonada(() => axios.post(
+          FONADA_V1_ENDPOINT,
+          { input: chunks[i], voice, language: resolved.v1 },
+          {
+            headers: {
+              Authorization: `Bearer ${this.fonadaApiKey}`,
+              'Content-Type': 'application/json'
+            },
+            responseType: 'arraybuffer',
+            timeout: 180000,
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            validateStatus: () => true
+          }
+        ));
+
+        if (response.status >= 400) {
+          throw new Error(parseFonadaError(response.data, response.status));
+        }
+
+        await fs.mkdir(path.dirname(chunkPath), { recursive: true });
+        await fs.writeFile(chunkPath, Buffer.from(response.data));
+        chunkPaths.push(chunkPath);
       }
 
-      // Fallback to Gemini native TTS (free tier)
-      if (this.gemini) {
-        return await this.generateGeminiTTS(text, outputPath);
+      await this.concatAudioChunks(chunkPaths, outputPath);
+      return outputPath;
+    } finally {
+      await this.cleanupFiles(chunkPaths.filter(chunkPath => chunkPath !== outputPath));
+    }
+  }
+
+  async generateFonadaCloneTTS(text, outputPath, language, options = {}) {
+    const resolved = language || this.resolveNarrationLanguage(text, options.language);
+    const selectedVoice = this.resolveSelectedVoice(options);
+    const shareId = this.resolveCloneShareId(options, selectedVoice);
+    if (!shareId) {
+      throw new Error('FONADA_SHARE_ID is required for Klone V2 narration');
+    }
+
+    const chunks = chunkTextForTTS(text, CLONE_MAX_CHARS);
+    if (chunks.length === 0) {
+      throw new Error('Fonada Klone received empty narration text');
+    }
+
+    const catalogLabel = selectedVoice?.name ? `, voice ${selectedVoice.name}` : '';
+    this.logger.info(`Generating Fonada Klone V2 TTS (${resolved.iso}${catalogLabel}, ${chunks.length} chunk${chunks.length === 1 ? '' : 's'})`);
+
+    const chunkPaths = [];
+    try {
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkPath = `${outputPath}.fonada-klone-${i}.wav`;
+        const form = new FormData();
+        form.append('share_id', shareId);
+        form.append('text', chunks[i]);
+        form.append('language', resolved.iso);
+        form.append('output_audio_codec', 'wav');
+
+        const response = await this.requestFonada(() => axios.post(FONADA_CLONE_ENDPOINT, form, {
+          headers: {
+            Authorization: `Bearer ${this.fonadaApiKey}`,
+            ...form.getHeaders()
+          },
+          responseType: 'arraybuffer',
+          timeout: 180000,
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity,
+          validateStatus: () => true
+        }));
+
+        if (response.status >= 400) {
+          throw new Error(parseFonadaError(response.data, response.status));
+        }
+
+        await fs.mkdir(path.dirname(chunkPath), { recursive: true });
+        await fs.writeFile(chunkPath, Buffer.from(response.data));
+        chunkPaths.push(chunkPath);
       }
 
-      // Final fallback to simulation
-      return await this.simulateTTSGeneration(text, outputPath);
-    } catch (error) {
-      this.logger.error('TTS generation failed:', error);
-      throw error;
+      await this.concatAudioChunks(chunkPaths, outputPath);
+      return outputPath;
+    } finally {
+      await this.cleanupFiles(chunkPaths.filter(chunkPath => chunkPath !== outputPath));
+    }
+  }
+
+  async concatAudioChunks(chunkPaths, outputPath) {
+    if (chunkPaths.length === 1) {
+      const source = chunkPaths[0];
+      if (path.resolve(source) === path.resolve(outputPath)) {
+        return outputPath;
+      }
+      await fs.mkdir(path.dirname(outputPath), { recursive: true });
+      if (path.extname(source).toLowerCase() === path.extname(outputPath).toLowerCase()) {
+        await fs.copyFile(source, outputPath);
+        return outputPath;
+      }
+      await runFFmpeg(['-y', '-i', source, '-c:a', 'libmp3lame', '-ar', '24000', '-ac', '1', outputPath]);
+      return outputPath;
+    }
+
+    const listPath = `${outputPath}.concat.txt`;
+    const list = chunkPaths
+      .map(chunkPath => `file '${String(chunkPath).replace(/'/g, "'\\''")}'`)
+      .join('\n');
+
+    await fs.writeFile(listPath, list);
+    try {
+      await runFFmpeg([
+        '-y', '-f', 'concat', '-safe', '0', '-i', listPath,
+        '-c:a', 'libmp3lame', '-ar', '24000', '-ac', '1',
+        outputPath
+      ]);
+      return outputPath;
+    } finally {
+      await fs.unlink(listPath).catch(() => {});
+    }
+  }
+
+  async cleanupFiles(filePaths = []) {
+    for (const filePath of filePaths) {
+      await fs.unlink(filePath).catch(() => {});
     }
   }
 
@@ -354,7 +606,8 @@ class AIVideoGenerator {
       }
 
       const videoPath = outputPath.replace('.mp4', '_visual.mp4');
-      const duration = this.calculateScriptDuration(script);
+      const duration = await this.resolveSlideshowDuration(script, audioPath);
+      this.logger.info(`Creating slideshow with ${stills.length} slides over ${duration.toFixed(1)}s`);
       await this.renderSlidesToVideo(stills, duration, videoPath);
 
       // Add audio
@@ -372,41 +625,50 @@ class AIVideoGenerator {
       throw new Error('No slides to render');
     }
 
-    const fade = 0.5;
-    const perSlide = Math.max(2, totalDuration / stills.length);
+    const target = Math.max(2, Number(totalDuration) || 0);
+    const base = target / stills.length;
+    const clipsDir = path.join(path.dirname(videoPath), `slideclips_${Date.now()}`);
+    await fs.mkdir(clipsDir, { recursive: true });
 
-    const args = ['-y'];
-    for (const still of stills) {
-      args.push('-loop', '1', '-t', perSlide.toFixed(2), '-framerate', '30', '-i', still);
-    }
+    try {
+      const clips = [];
+      let allocated = 0;
+      for (let i = 0; i < stills.length; i++) {
+        const clipDuration = i === stills.length - 1
+          ? Math.max(2, target - allocated)
+          : Math.max(2, base);
+        allocated += clipDuration;
+        const clipPath = path.join(clipsDir, `clip_${String(i).padStart(3, '0')}.mp4`);
+        await runFFmpeg([
+          '-y',
+          '-loop', '1',
+          '-i', stills[i],
+          '-t', clipDuration.toFixed(3),
+          '-vf', 'fps=24,format=yuv420p',
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-tune', 'stillimage',
+          '-pix_fmt', 'yuv420p',
+          clipPath
+        ]);
+        clips.push(clipPath);
+      }
 
-    if (stills.length === 1) {
-      args.push('-vf', 'format=yuv420p', '-c:v', 'libx264', videoPath);
-      await runFFmpeg(args);
+      if (clips.length === 1) {
+        await fs.copyFile(clips[0], videoPath);
+        return videoPath;
+      }
+
+      const listPath = path.join(clipsDir, 'concat.txt');
+      const list = clips
+        .map(clipPath => `file '${path.basename(clipPath).replace(/'/g, "'\\''")}'`)
+        .join('\n');
+      await fs.writeFile(listPath, list);
+      await runFFmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', videoPath]);
       return videoPath;
+    } finally {
+      await this.cleanupDirectory(clipsDir);
     }
-
-    // Chain crossfades: transition k starts fade seconds before slide k ends
-    const filters = [];
-    let prev = '[0:v]';
-    for (let i = 1; i < stills.length; i++) {
-      const out = `[v${i}]`;
-      const offset = (i * (perSlide - fade)).toFixed(2);
-      filters.push(`${prev}[${i}:v]xfade=transition=fade:duration=${fade}:offset=${offset}${out}`);
-      prev = out;
-    }
-    filters.push(`${prev}format=yuv420p[vfinal]`);
-
-    args.push(
-      '-filter_complex', filters.join(';'),
-      '-map', '[vfinal]',
-      '-c:v', 'libx264',
-      '-r', '30',
-      videoPath
-    );
-
-    await runFFmpeg(args);
-    return videoPath;
   }
 
   async filterImageAssets(visualAssets = []) {
@@ -473,15 +735,16 @@ class AIVideoGenerator {
         }
         
         h2 {
-            font-size: 48px;
+            font-size: 44px;
             margin-bottom: 20px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
         }
         
         p {
-            font-size: 36px;
-            line-height: 1.4;
+            font-size: 28px;
+            line-height: 1.35;
             text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+            margin: 0 0 16px 0;
         }
         
         .background-image {
@@ -525,8 +788,8 @@ class AIVideoGenerator {
     <div class="slide active">
         ${visualAssets[0] ? `<img class="background-image" src="${visualAssets[0]}" />` : ''}
         <div class="content">
-            <h1>${script.title}</h1>
-            <p>Ethereal Dreamscript</p>
+            <h1>${this.escapeSlideHtml(script.title)}</h1>
+            <p>${this.escapeSlideHtml(script.hook?.text || 'Ethereal Dreamscript')}</p>
         </div>
     </div>
     
@@ -535,8 +798,9 @@ class AIVideoGenerator {
     <!-- Subscribe Slide -->
     <div class="slide">
         <div class="content">
-            <h2>✨ Subscribe for More Stories ✨</h2>
-            <p>New content daily at 2:00 PM</p>
+            <h2>${this.escapeSlideHtml(script.callToAction?.subscribe ? 'Subscribe' : 'Subscribe for more')}</h2>
+            <p>${this.escapeSlideHtml(script.callToAction?.subscribe || 'New videos on this channel')}</p>
+            ${script.callToAction?.like ? `<p>${this.escapeSlideHtml(script.callToAction.like)}</p>` : ''}
         </div>
     </div>
     
@@ -574,86 +838,186 @@ class AIVideoGenerator {
 
   generateContentSlides(script, visualAssets) {
     const slides = [];
-    
+    const pickImage = (index) => {
+      if (!visualAssets.length) return '';
+      return visualAssets[Math.min(Math.max(index, 0), visualAssets.length - 1)];
+    };
+
+    const introLines = [
+      script.introduction?.greeting,
+      script.introduction?.topicIntro,
+      script.introduction?.valueProposition
+    ].filter(Boolean);
+    if (introLines.length) {
+      slides.push(this.buildSlideHtml('Introduction', introLines.slice(0, 3), pickImage(0)));
+    }
+
     if (script.mainContent && script.mainContent.sections) {
       script.mainContent.sections.forEach((section, index) => {
-        const assetIndex = Math.min(index + 1, visualAssets.length - 1);
-        
-        slides.push(`
-        <div class="slide">
-            ${visualAssets[assetIndex] ? `<img class="background-image" src="${visualAssets[assetIndex]}" />` : ''}
-            <div class="content">
-                <h2>${section.title}</h2>
-                ${this.formatSectionContent(section)}
-            </div>
-        </div>`);
+        const lines = this.sectionSpokenLines(section);
+        const groups = this.chunkLines(lines, 2);
+        groups.forEach((group, groupIndex) => {
+          const title = groupIndex === 0 ? section.title : `${section.title} (continued)`;
+          slides.push(this.buildSlideHtml(title, group, pickImage(index + 1)));
+        });
       });
     }
-    
+
+    const recap = Array.isArray(script.conclusion?.recap) ? script.conclusion.recap.filter(Boolean) : [];
+    if (recap.length || script.conclusion?.finalThought) {
+      const closing = recap.concat(script.conclusion?.finalThought || []).filter(Boolean).slice(0, 4);
+      slides.push(this.buildSlideHtml(script.conclusion?.title || 'Key takeaways', closing, pickImage(visualAssets.length - 1)));
+    }
+
     return slides;
   }
 
+  buildSlideHtml(title, lines, image) {
+    return `
+        <div class="slide">
+            ${image ? `<img class="background-image" src="${image}" />` : ''}
+            <div class="content">
+                <h2>${this.escapeSlideHtml(title)}</h2>
+                ${this.formatSectionLines(lines)}
+            </div>
+        </div>`;
+  }
+
+  sectionSpokenLines(section = {}) {
+    if (Array.isArray(section.content) && section.content.length) {
+      return section.content.map(line => String(line).trim()).filter(Boolean);
+    }
+    if (typeof section.content === 'string' && section.content.trim()) {
+      return [section.content.trim()];
+    }
+    if (Array.isArray(section.items) && section.items.length) {
+      return section.items.map(item => [item.number, item.title, item.description].filter(Boolean).join('. '));
+    }
+    if (Array.isArray(section.steps) && section.steps.length) {
+      return section.steps.map(step => [step.title, step.description].filter(Boolean).join('. '));
+    }
+    if (Array.isArray(section.points) && section.points.length) {
+      return section.points.map(point => String(point).trim()).filter(Boolean);
+    }
+    return [];
+  }
+
+  chunkLines(lines, size = 2) {
+    const items = Array.isArray(lines) ? lines.filter(Boolean) : [];
+    if (!items.length) return [['']];
+    const groups = [];
+    for (let i = 0; i < items.length; i += size) {
+      groups.push(items.slice(i, i + size));
+    }
+    return groups;
+  }
+
+  formatSectionLines(lines = []) {
+    const items = (Array.isArray(lines) ? lines : [lines]).filter(Boolean);
+    if (!items.length) {
+      return '<p></p>';
+    }
+    return items.map(line => {
+      const text = String(line).trim();
+      const clipped = text.length > 280 ? `${text.slice(0, 277)}…` : text;
+      return `<p>${this.escapeSlideHtml(clipped)}</p>`;
+    }).join('');
+  }
+
   formatSectionContent(section) {
-    if (section.items && Array.isArray(section.items)) {
-      return section.items.slice(0, 3).map(item => 
-        `<p>${item.number}. ${item.title}</p>`
-      ).join('');
+    const lines = this.sectionSpokenLines(section);
+    if (lines.length) {
+      return this.formatSectionLines(lines.slice(0, 3));
     }
-    
-    if (section.steps && Array.isArray(section.steps)) {
-      return section.steps.slice(0, 3).map(step => 
-        `<p>${step.title}</p>`
-      ).join('');
+    return '<p></p>';
+  }
+
+  escapeSlideHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  collectSpokenText(script = {}) {
+    const parts = [];
+    if (script.hook?.text) parts.push(script.hook.text);
+    const intro = script.introduction || {};
+    for (const key of ['greeting', 'topicIntro', 'valueProposition', 'credibility']) {
+      if (intro[key]) parts.push(intro[key]);
     }
-    
-    if (typeof section.content === 'string') {
-      return `<p>${section.content.slice(0, 200)}${section.content.length > 200 ? '...' : ''}</p>`;
+    for (const section of script.mainContent?.sections || []) {
+      parts.push(...this.sectionSpokenLines(section));
     }
-    
-    return '<p>Content coming soon...</p>';
+    if (Array.isArray(script.conclusion?.recap)) parts.push(...script.conclusion.recap);
+    if (script.conclusion?.finalThought) parts.push(script.conclusion.finalThought);
+    const cta = script.callToAction || {};
+    for (const key of ['subscribe', 'like', 'comment', 'nextVideo']) {
+      if (cta[key]) parts.push(cta[key]);
+    }
+    return parts.filter(Boolean).join(' ');
   }
 
   calculateScriptDuration(script) {
-    // Estimate duration based on word count (average 150 words per minute)
-    let totalWords = 0;
-    
-    if (script.hook) totalWords += script.hook.text.split(' ').length;
-    if (script.introduction) {
-      totalWords += (script.introduction.greeting || '').split(' ').length;
-      totalWords += (script.introduction.topicIntro || '').split(' ').length;
+    const words = this.collectSpokenText(script).split(/\s+/).filter(Boolean).length;
+    return Math.max(30, Math.ceil((words / 150) * 60));
+  }
+
+  async resolveSlideshowDuration(script, audioPath) {
+    if (await this.isUsableAudioFile(audioPath)) {
+      const audioSeconds = await getMediaDuration(audioPath);
+      if (audioSeconds >= 5) {
+        return audioSeconds + 0.35;
+      }
     }
-    
-    if (script.mainContent && script.mainContent.sections) {
-      script.mainContent.sections.forEach(section => {
-        if (typeof section.content === 'string') {
-          totalWords += section.content.split(' ').length;
-        }
-        if (section.items) {
-          section.items.forEach(item => {
-            totalWords += (item.title + ' ' + item.description).split(' ').length;
-          });
-        }
-        if (section.steps) {
-          section.steps.forEach(step => {
-            totalWords += (step.title + ' ' + step.description).split(' ').length;
-          });
-        }
-      });
+    return this.calculateScriptDuration(script);
+  }
+
+  async extendVideoToDuration(videoPath, targetSeconds) {
+    const current = await getMediaDuration(videoPath);
+    const extra = Number(targetSeconds) - current;
+    if (!(extra > 0.05) || !Number.isFinite(extra)) {
+      return videoPath;
     }
-    
-    if (script.conclusion) {
-      totalWords += script.conclusion.finalThought.split(' ').length;
+
+    const dir = path.dirname(videoPath);
+    const stem = path.basename(videoPath, path.extname(videoPath));
+    const framePath = path.join(dir, `${stem}_tail.png`);
+    const tailPath = path.join(dir, `${stem}_tail.mp4`);
+    const listPath = path.join(dir, `${stem}_tail.txt`);
+    const extendedPath = path.join(dir, `${stem}_extended.mp4`);
+
+    try {
+      await runFFmpeg(['-y', '-sseof', '-0.1', '-i', videoPath, '-frames:v', '1', framePath]);
+      await runFFmpeg([
+        '-y',
+        '-loop', '1',
+        '-i', framePath,
+        '-t', extra.toFixed(3),
+        '-vf', 'fps=24,format=yuv420p',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-tune', 'stillimage',
+        '-pix_fmt', 'yuv420p',
+        tailPath
+      ]);
+      await fs.writeFile(
+        listPath,
+        `file '${path.basename(videoPath).replace(/'/g, "'\\''")}'\nfile '${path.basename(tailPath).replace(/'/g, "'\\''")}'\n`
+      );
+      await runFFmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', extendedPath]);
+      return extendedPath;
+    } finally {
+      await this.cleanupFiles([framePath, tailPath, listPath]);
     }
-    
-    // Convert to duration (150 words per minute)
-    return Math.max(30, Math.ceil((totalWords / 150) * 60));
   }
 
   async addAudioToVideo(videoPath, audioPath, outputPath) {
     const hasRealAudio = await this.isUsableAudioFile(audioPath);
 
     if (!hasRealAudio) {
-      this.logger.warn('No narration audio available — producing silent video. Configure OpenAI, ElevenLabs, or Azure Speech for narration.');
+      this.logger.warn('No narration audio available — producing silent video. Configure Fonada Labs, Gemini TTS, or OpenAI for narration.');
       if (videoPath !== outputPath) {
         await fs.copyFile(videoPath, outputPath);
       }
@@ -665,13 +1029,27 @@ class AIVideoGenerator {
       ? outputPath.replace(/\.mp4$/i, '_muxed.mp4')
       : outputPath;
 
-    await runFFmpeg(['-y', '-i', videoPath, '-i', audioPath, '-c:v', 'copy', '-c:a', 'aac', '-shortest', muxPath]);
+    const audioDuration = await getMediaDuration(audioPath);
+    const videoDuration = await getMediaDuration(videoPath);
+    const visualInput = await this.extendVideoToDuration(
+      videoPath,
+      audioDuration > 0 ? audioDuration + 0.2 : videoDuration
+    );
+
+    // Do not use -shortest. That flag stops at the first stream that ends,
+    // so a slideshow that is even 1s short will cut the last words.
+    await runFFmpeg(['-y', '-i', visualInput, '-i', audioPath, '-c:v', 'copy', '-c:a', 'aac', muxPath]);
 
     if (muxPath !== outputPath) {
       await fs.rename(muxPath, outputPath);
     }
 
-    this.logger.info('Audio added to video successfully');
+    const muxedDuration = await getMediaDuration(outputPath);
+    if (audioDuration > 0 && muxedDuration + 0.2 < audioDuration) {
+      throw new Error(`Narration was trimmed during mux (${muxedDuration.toFixed(1)}s video, ${audioDuration.toFixed(1)}s audio)`);
+    }
+
+    this.logger.info(`Audio added to video successfully (${muxedDuration.toFixed(1)}s, narration ${audioDuration.toFixed(1)}s)`);
     return outputPath;
   }
 

@@ -8,86 +8,169 @@ Research topics → write scripts → generate narration and visuals → assembl
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js 18+](https://img.shields.io/badge/node-18%2B-43853d.svg)](package.json)
 
-## What's new in version 2.6.0
+## What's new
 
-Version 2.6 turns the agent into a safer, self-improving channel operator:
+Recent operator work on top of **v2.6.0**:
 
-- **Autonomous Channel Operator:** define the audience, objective, content pillars, cadence, and guardrails once; the agent researches, plans, and runs the production workflow.
-- **Closed-loop channel learning:** real 24-hour and 7-day analytics become evidence-backed recommendations that influence future plans only after you approve them.
-- **Production Readiness Gate:** verify text, narration, FFmpeg, YouTube access, and upload metadata before autonomous production or publishing begins.
-- **Safer packaging experiments:** review and select title and thumbnail variants without silently changing live YouTube metadata.
+- **Speaking style:** a dedicated dashboard page. Paste up to 5 YouTube links; Fonada ASR transcribes them and the next AI scripts follow that delivery. This does not clone a voice.
+- **YouTube from the dashboard:** save a Google OAuth client and sign in under **Channel setup**. Generation still works without YouTube.
+- **Fonada narration:** Klone V2 with a `share_id`, or a named V1 voice. Spoken language (Hindi, English, Tamil, Telugu) is a dashboard control, not a hidden `.env` default.
+- **Video length matches narration:** slideshows are timed from the real TTS audio. Mux does not cut the track with FFmpeg `-shortest`.
+- **Safer open-source checkout:** `.env`, OAuth tokens, SQLite, and generated media are gitignored. Copy `.env.example` to `.env`.
 
-See the complete release history in [CHANGELOG.md](CHANGELOG.md).
+Version 2.6 also added the Autonomous Channel Operator, closed-loop learning, the Production Readiness Gate, and packaging experiments. Full history: [CHANGELOG.md](CHANGELOG.md).
 
-- **Self-hosted:** your credentials, media, and channel data stay under your control.
+- **Self-hosted:** credentials, media, and channel data stay on your machine.
 - **Approval-first:** nothing is scheduled until quality, rights, and human-review gates pass by default.
-- **Strategy-driven:** give the Autonomous Channel Operator an objective, audience, pillars, cadence, and guardrails; it turns them into researched content plans and production runs.
-- **Provider-flexible:** use Gemini, OpenAI, OpenRouter, Kimi, MiMo, GLM, or another OpenAI-compatible endpoint.
-- **Observable:** follow persistent generation jobs, failures, review state, publishing, and local activation milestones from the dashboard.
-
-<!-- Launch gate: add only a real 30–45 second dashboard demo captured from a verified end-to-end run. -->
+- **Strategy-driven:** set an objective, audience, pillars, cadence, and guardrails; the agent turns them into researched plans and production runs.
+- **Provider-flexible:** Gemini, OpenAI, OpenRouter, Kimi, MiMo, GLM, or another OpenAI-compatible endpoint.
+- **Observable:** follow jobs, failures, review, publishing, and local activation milestones in the dashboard.
 
 ## Quick start
 
 ```bash
 git clone https://github.com/darkzOGx/youtube-automation-agent.git
 cd youtube-automation-agent
+cp .env.example .env
 npm install
 npm run walkthrough
 npm start
 ```
 
-Open `http://localhost:3456`. The walkthrough explains each provider choice, tests credentials, and guides YouTube authorization.
+Open [http://localhost:3456](http://localhost:3456). The walkthrough explains each provider, tests credentials, and can start YouTube authorization.
 
-Already know what you are doing? `npm run setup` offers a shorter classic flow, and `.env.example` documents every setting.
+Already set up? Put keys in `.env`, then `npm start`. `npm run setup` is a shorter classic flow. Every setting is documented in [`.env.example`](.env.example).
 
-### Verify production readiness
-
-Before activating autonomous production, open **Production readiness** in the dashboard and choose **Run verified check**. The gate makes small live text and narration requests, verifies access to the connected YouTube channel, creates and decodes a temporary MP4 containing audio and video, and validates every queued upload's metadata. It never creates or uploads a YouTube video, and temporary probe assets are deleted after the run.
-
-AI image generation can incur a larger provider charge, so its live probe is a separate opt-in checkbox. Without that checkbox, image configuration is reported as verified, skipped, or using the built-in gradient fallback without making a paid image request.
-
-Results persist locally in SQLite with exact remediation steps. A recorded blocking failure stops autonomous generation and publishing until a later run passes; manual work remains available when readiness has never been checked or the last result is older than 24 hours.
+YouTube OAuth is **not** an API key in `.env`. Connect it in the dashboard. Full walkthrough: [docs/youtube-oauth.md](docs/youtube-oauth.md). Fonada keys and share ids: [docs/fonada-credentials.md](docs/fonada-credentials.md).
 
 ### What you need
 
 - Node.js 18+
-- A Google account and YouTube Data API credentials
 - At least one AI text provider key
-- FFmpeg, installed automatically through `ffmpeg-static`
+- FFmpeg (installed automatically via `ffmpeg-static`, or set `FFMPEG_PATH`)
+- Optional for upload: a Google account and YouTube Data API OAuth client
+- Optional for Fonada TTS / speaking style: a [Fonada](https://fonada.ai) API key; `yt-dlp` on `PATH` (or `YT_DLP_PATH`) to pull audio from YouTube links
 
-Gemini offers free access for supported text and TTS usage. Gemini AI image generation currently requires paid-tier access; without an image provider, Lumen can assemble gradient-based visuals instead.
+Gemini offers free access for supported text and TTS. Gemini AI image generation currently needs paid-tier access. Without an image provider, Lumen can assemble gradient-based visuals.
 
-### Run the Autonomous Channel Operator
+## Dashboard
 
-Open **Autonomous operator** in the dashboard and describe the channel outcome—not a task list. Set the objective, audience, content pillars, publishing cadence, success metric, and boundaries, then choose **Activate & run now**.
+The left nav stays on screen while the main pane scrolls.
 
-Lumen refreshes YouTube trend and configured-competitor signals, checks recent channel topics, creates an evidence-labeled editorial plan, and sends each planned video through strategy, script, thumbnail, SEO, production, and workflow management. Active strategies also guide scheduled generation at the requested weekly cadence. Operator runs, decisions, progress, and failures persist in SQLite and remain visible in the dashboard.
+| Page | Purpose |
+| --- | --- |
+| **Overview** | Decision queue, running jobs, upcoming schedule, activity |
+| **Autonomous operator** | Channel mandate, activate/pause runs |
+| **Pipeline** | Every production: review, reject, retry, open Review Studio |
+| **Calendar & ideas** | Scheduled publishes and a topic backlog |
+| **Analytics** | Performance plus **What the agent learned** |
+| **Production readiness** | Live probes before you turn on autonomy |
+| **Speaking style** | Learn delivery from YouTube videos; toggle use on next scripts |
+| **Channel setup** | YouTube OAuth, brand, language, voice / share id, timezone |
 
-By default, finished videos wait for factual review, media-rights confirmation, and approval. Once approved, the existing publishing agent schedules and uploads them. Turning on autonomy does not bypass those gates, and simulated videos still cannot publish.
+**Create video** starts a background generation job (topic optional). You can follow stages and cancel between them.
 
-### Close the performance loop
+## Channel setup
 
-After publication, Lumen captures comparable 24-hour and 7-day performance snapshots. It evaluates CTR, retention, engagement, watch time, format, length, hook style, and title style against the channel's own history—not a universal view-count target.
+Guardrails on this page apply to every later job:
 
-Open **Analytics → What the agent learned** to review the evidence and confidence behind each recommendation. Pending or rejected recommendations never influence generation. Once you approve one, the next Autonomous Channel Operator run includes it as an explicit planning constraint. Simulated analytics fallbacks are stored as unverified and are never eligible for baselines or recommendations.
+- Channel name, goal, audience, brand voice, CTA, visual direction
+- Default format (explainer, tutorial, list, review, story)
+- Spoken language: Hindi, English, Tamil, Telugu
+- Voice or Fonada `share_id` (6–12 alphanumeric → Klone V2; a name → V1; blank → `FONADA_SHARE_ID` in `.env`)
+- Timezone used for schedule display and `datetime-local` (India IST is `Asia/Kolkata`)
+- Blocked topics (quality review rejects matches)
+- Require approval before scheduling
 
-When an approved learning calls for better packaging, Lumen prepares a control plus title and thumbnail variants for new videos. Review Studio shows those options before approval; the selected combination is the only one handed to the publishing queue. Lumen does not silently swap live YouTube metadata.
+### Connect YouTube
+
+Step-by-step Cloud Console + dashboard flow: **[docs/youtube-oauth.md](docs/youtube-oauth.md)**.
+
+Uploads use OAuth, not a YouTube API key.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create a project.
+2. Enable **YouTube Data API v3**.
+3. OAuth consent screen: **External**. Add your Gmail as a **test user** or you will get `403 access_denied`.
+4. Create an OAuth client of type **Desktop app**.
+5. In **Channel setup**, paste Client ID and Client Secret, save, then **Connect Google account**.
+6. Allow this redirect URI (the dashboard shows the exact value):
+
+   `http://127.0.0.1:3456/api/youtube/callback`
+
+Google may say the app is not verified. That is expected for a local Desktop client — use Continue / Advanced.
+
+Tokens are stored in `config/tokens.json` (gitignored). You can also keep the client in `config/credentials.json` from [`config/credentials.example.json`](config/credentials.example.json).
+
+Generation, review, and local export work without YouTube. Connect it when you want the publisher to upload.
+
+Custom thumbnails and captions need extra YouTube scopes / channel permissions. If those fail after a successful upload, the video is still on the channel.
+
+## Speaking style
+
+**Speaking style** is its own page (`#style`). It does **not** clone anyone’s voice. It only shapes the **written script**.
+
+1. Paste 1–5 YouTube URLs (your videos or references).
+2. Set **Spoken language for ASR** to the language actually spoken. English audio with Hindi ASR produces English sounds written in Devanagari.
+3. Click **Learn speaking style**. The job transcribes the first 8 minutes of each video (`SPEAKING_STYLE_MAX_MINUTES`).
+4. Leave **Use this style in the next scripts** on.
+
+The profile (opening, rhythm, energy, vocabulary, CTA, excerpts) is stored locally. Manual **Create video** and autonomous script jobs attach it to the script-writer prompt. Already-rendered videos are unchanged. If AI script writing falls back to templates, the style block is not applied.
+
+Expect roughly 2–4 minutes per video, often 10–20 minutes for five links. Downloads time out if YouTube/yt-dlp stalls.
+
+CLI: `npm run test:fonada-asr` with links and `FONADA_API_KEY` set.
+
+## Voice and video assembly
+
+Fonada API key, `share_id` vs voice name, and ASR: **[docs/fonada-credentials.md](docs/fonada-credentials.md)**.
+
+Narration order: **Fonada** (Klone V2 or V1) → Gemini TTS → OpenAI TTS → ElevenLabs → Azure → silent/simulated.
+
+Slideshows:
+
+- Spoken script text (including array bullets) drives slides.
+- Final duration follows the narration file plus a short buffer.
+- Last slide absorbs leftover time; if video is shorter than audio, the last frame is frozen.
+- Mux does **not** use `-shortest`, so a long TTS track is not cut to a short slideshow.
+
+Finished files land in `data/videos/` on this machine. They are not uploaded until you approve and the schedule runs.
+
+## Verify production readiness
+
+Before autonomous production, open **Production readiness** and **Run verified check**. The gate makes small live text and narration requests, verifies the connected YouTube channel, builds and decodes a temporary MP4, and validates queued upload metadata. It never uploads to YouTube. Temporary probe files are deleted afterward.
+
+AI image generation can cost more, so its live probe is an opt-in checkbox. Without it, image setup is reported as verified, skipped, or using the gradient fallback.
+
+Results persist in SQLite with remediation steps. A recorded blocking failure stops autonomous generation and publishing until a later run passes. Manual work still works if readiness was never checked or the last result is older than 24 hours.
+
+## Autonomous Channel Operator
+
+Open **Autonomous operator** and describe the channel outcome. Set objective, audience, pillars, cadence, success metric, and boundaries, then **Activate & run now**.
+
+Lumen refreshes trend and competitor signals, checks recent topics, builds an evidence-labeled plan, and runs each video through strategy, script, thumbnail, SEO, production, and workflow. Active strategies also drive the scheduled daily generation check. Runs stay visible in the dashboard.
+
+Finished videos still wait for factual review, media-rights confirmation, and approval. Autonomy does not skip those gates. Simulated videos cannot publish.
+
+## Close the performance loop
+
+After publication, Lumen stores 24-hour and 7-day snapshots (CTR, retention, engagement, watch time, format, length, hook, title) against **this channel’s** history.
+
+**Analytics → What the agent learned** shows evidence and confidence. Pending or rejected recommendations never affect generation. An approved one becomes a planning constraint on the next operator run. Simulated analytics are unverified and never become baselines.
+
+Approved packaging learnings can produce title and thumbnail variants for **new** videos. Review Studio is the only place a variant is chosen. Live YouTube metadata is not silently rewritten.
 
 ## From idea to published video
 
 | Stage | What Lumen does | What you control |
 | --- | --- | --- |
-| Research | Finds topics and builds a content strategy | Niche, audience, blocked topics |
-| Script | Writes the hook, narrative, CTA, and metadata | Voice, format, length, brand direction |
-| Production | Generates narration and visuals, then assembles a real MP4 | Provider choice and media fallbacks |
-| Review | Runs quality checks and opens the video in Review Studio | Facts, media rights, edits, approval |
-| Publish | Schedules and uploads approved content | Privacy, timing, final decision |
-| Learn | Captures 24-hour and 7-day evidence, then proposes the next move | Approve or reject each learning before it guides planning |
+| Research | Finds topics and builds a strategy | Niche, audience, blocked topics |
+| Script | Writes hook, narrative, CTA, metadata; optional speaking-style prompt | Voice / share id, format, length, language, brand |
+| Production | Narration, visuals, captions, real MP4 | Providers and fallbacks |
+| Review | Quality checks and Review Studio | Facts, rights, edits, approval |
+| Publish | Cron uploads approved items when the slot is due | Privacy, time, final decision |
+| Learn | 24h / 7d evidence and recommendations | Approve or reject each learning |
 
-Lumen distinguishes real MP4 output from simulated placeholders. Simulated output cannot enter the approval or publishing path.
-
-For release history, see [CHANGELOG.md](CHANGELOG.md).
+Lumen distinguishes a real MP4 from a simulated placeholder. Simulated output cannot be approved or published.
 
 ## Architecture
 
@@ -96,207 +179,175 @@ graph TD
     O[Autonomous Channel Operator] --> A[Research and Editorial Plan]
     A --> B[Content Strategy Agent]
     B --> C[Script Writer Agent]
+    S[Speaking Style / Fonada ASR] --> C
     C --> D[Thumbnail Designer Agent]
     C --> E[SEO Optimizer Agent]
     D --> F[Production Management Agent]
     E --> F
     F --> G[Review and Approval Gates]
-    G --> H[Publishing & Scheduling Agent]
-    H --> I[Analytics & Optimization Agent]
+    G --> H[Publishing and Scheduling Agent]
+    H --> I[Analytics and Optimization Agent]
     I -->|feedback loop| A
 ```
 
-## How It Works
-
-Each agent handles one stage of the pipeline:
-
 | Agent | Role |
-|-------|------|
-| **Content Strategy** | Analyzes YouTube trends, identifies topics, plans content calendar |
-| **Script Writer** | Generates scripts with hooks, storytelling, CTAs |
-| **Thumbnail Designer** | Creates thumbnails, runs A/B variations |
-| **SEO Optimizer** | Keywords, titles, descriptions, tags |
-| **Production** | Coordinates TTS audio, image assets, video assembly |
-| **Publishing** | Uploads, schedules, manages playlists |
-| **Analytics** | Tracks performance, feeds insights back to strategy |
+| --- | --- |
+| **Content Strategy** | Trends, topics, calendar |
+| **Script Writer** | Hooks, structure, CTAs, speaking-style prompt |
+| **Thumbnail Designer** | Thumbnails and A/B variants |
+| **SEO Optimizer** | Titles, descriptions, tags |
+| **Production** | TTS, images, FFmpeg assembly |
+| **Publishing** | Queue, upload, schedule |
+| **Analytics** | Performance back into strategy |
 
-## AI Providers
+## AI providers
 
-All OpenAI-compatible providers work out of the box — the system auto-configures the SDK base URL. Pick one, or use OpenRouter to access everything through a single key.
+All OpenAI-compatible providers work out of the box. The SDK base URL is configured automatically. Use OpenRouter if you want one key for many models.
 
 ```mermaid
 graph LR
     subgraph Direct
-        OA[OpenAI<br/>GPT-5.6 family]
-        GM[Gemini<br/>3.7 Flash / 3.1 Pro]
-        KM[Kimi<br/>K3]
-        MM[MiMo<br/>V2.5 Pro]
-        GL[GLM<br/>GLM-5.3]
+        OA[OpenAI]
+        GM[Gemini]
+        KM[Kimi]
+        MM[MiMo]
+        GL[GLM]
     end
     subgraph Router
-        OR[OpenRouter<br/>400+ models]
+        OR[OpenRouter]
     end
     Direct --> YAA[YouTube Automation Agent]
     Router --> YAA
 ```
 
 | Provider | Models | Base URL | Cost |
-|----------|--------|----------|------|
-| **OpenAI** | GPT-5.6 Sol, Terra, Luna | `api.openai.com/v1` | provider pricing |
-| **OpenRouter** | 400+ models; curated defaults are validated against its live catalog | `openrouter.ai/api/v1` | varies by model |
-| **Google Gemini** | Gemini 3.7 Flash, 3.1 Pro Preview, 3.5 Flash-Lite | via `@google/genai` SDK | free tiers vary by model and modality |
+| --- | --- | --- | --- |
+| **OpenAI** | GPT-5.6 family | `api.openai.com/v1` | provider pricing |
+| **OpenRouter** | 400+ models | `openrouter.ai/api/v1` | varies |
+| **Google Gemini** | 3.7 Flash, 3.1 Pro Preview, 3.5 Flash-Lite | `@google/genai` | free tiers vary |
 | **Kimi (Moonshot AI)** | Kimi K3, K2.7 Code, K2.6 | `api.moonshot.ai/v1` | provider pricing |
 | **MiMo (Xiaomi)** | MiMo V2.5 Pro, V2.5 | `api.xiaomimimo.com/v1` | provider pricing |
 | **GLM (Zhipu AI)** | GLM-5.3, 5.2, 5.1 | `api.z.ai/api/paas/v4/` | provider pricing |
 
-Additional integrations: Anthropic Claude (`claude-fable-5`), ElevenLabs (Eleven v3 TTS), Replicate (Wan 2.7 video), local models via Ollama, any OpenAI-compatible endpoint.
+Also used when configured: Fonada (TTS + ASR), Gemini images/TTS, ElevenLabs, Azure Speech, Replicate video, Anthropic-compatible endpoints, Ollama / any OpenAI-compatible URL.
 
 ## Configuration
 
-### API Keys
+| Guide | Contents |
+| --- | --- |
+| [docs/fonada-credentials.md](docs/fonada-credentials.md) | Fonada API key, Klone `share_id`, V1 voices, ASR |
+| [docs/youtube-oauth.md](docs/youtube-oauth.md) | Google Cloud project, consent screen, Desktop client, dashboard connect |
+| [`.env.example`](.env.example) | Every environment variable |
 
-#### YouTube Data API (required, free)
+### Environment
 
-1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
-2. Enable **YouTube Data API v3**
-3. Create an OAuth 2.0 client (Desktop app)
-4. Save the JSON as `config/credentials.json`
-
-#### OpenAI
-
-1. Get a key from [platform.openai.com](https://platform.openai.com/)
-2. Set `OPENAI_API_KEY` in `.env`
-
-#### OpenRouter (easiest — one key, all models)
-
-1. Get a key from [openrouter.ai/keys](https://openrouter.ai/keys)
-2. Set `OPENROUTER_API_KEY` in `.env`
-
-#### Google Gemini
-
-1. Get a key from [Google AI Studio](https://aistudio.google.com/)
-2. Set `GEMINI_API_KEY` in `.env`
-
-#### Kimi / MiMo / GLM
-
-| Provider | Get key at | Env var |
-|----------|-----------|---------|
-| Kimi (Moonshot AI) | [platform.kimi.ai](https://platform.kimi.ai) | `MOONSHOT_API_KEY` |
-| MiMo (Xiaomi) | [mimo.mi.com](https://mimo.mi.com) | `MIMO_API_KEY` |
-| GLM (Zhipu AI) | [z.ai](https://z.ai) | `GLM_API_KEY` |
-
-### Environment Variables
-
-```env
-# AI provider — pick one (or use OpenRouter for access to all)
-OPENAI_API_KEY=sk-...
-# OPENROUTER_API_KEY=sk-or-...
-# GEMINI_API_KEY=...
-# MOONSHOT_API_KEY=...
-# MIMO_API_KEY=...
-# GLM_API_KEY=...
-
-# Optional: premium TTS
-# ELEVENLABS_API_KEY=...
-# ELEVENLABS_VOICE_ID=...
-
-# Optional: AI video generation
-# REPLICATE_API_KEY=...
-
-# App config
-NODE_ENV=production
-PORT=3456
-CHANNEL_NAME=Your Channel Name
-TARGET_AUDIENCE=Your target audience
-YOUTUBE_REGION=US
-DEFAULT_PRIVACY_STATUS=private
-
-# Optional: protect mutating API routes (POST /generate, /publish)
-# API_KEY=some-long-random-string
-
-# Optional anonymous activation milestones (off by default; HTTPS endpoint required)
-# ANONYMOUS_TELEMETRY_ENABLED=false
-# ANONYMOUS_TELEMETRY_ENDPOINT=https://your-collector.example/events
+```bash
+cp .env.example .env
 ```
+
+[`.env.example`](.env.example) is the full list. Secrets stay commented so they cannot be copied by accident.
+
+| Group | Variables |
+| --- | --- |
+| App | `PORT`, `NODE_ENV`, `LOG_LEVEL`, `API_KEY`, `MAX_CONCURRENT_JOBS` |
+| Channel | `CHANNEL_NAME`, `CHANNEL_TIMEZONE`, `YOUTUBE_REGION`, `DEFAULT_PRIVACY_STATUS` |
+| Text | `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `MOONSHOT_API_KEY`, `MIMO_API_KEY`, `GLM_API_KEY` |
+| Fonada / style | `FONADA_API_KEY`, `FONADA_SHARE_ID`, `FONADA_VOICE`, `FONADA_TTS_MODEL`, `SPEAKING_STYLE_MAX_MINUTES` |
+| Optional media | `FFMPEG_PATH`, `YT_DLP_PATH`, `YT_DLP_COOKIES`, Gemini/ElevenLabs/Replicate/Azure keys |
+
+Do not put Google Client ID/Secret in `.env`. Use Channel setup or `config/credentials.json`.
+
+### API keys (text)
+
+| Provider | Where to get a key | Env var |
+| --- | --- | --- |
+| OpenAI | [platform.openai.com](https://platform.openai.com/) | `OPENAI_API_KEY` |
+| OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) | `OPENROUTER_API_KEY` |
+| Gemini | [Google AI Studio](https://aistudio.google.com/) | `GEMINI_API_KEY` |
+| Kimi | [platform.kimi.ai](https://platform.kimi.ai) | `MOONSHOT_API_KEY` |
+| MiMo | [mimo.mi.com](https://mimo.mi.com) | `MIMO_API_KEY` |
+| GLM | [z.ai](https://z.ai) | `GLM_API_KEY` |
+| Fonada | [fonada.ai](https://fonada.ai) | `FONADA_API_KEY` |
 
 ### Activation measurement and privacy
 
-The dashboard calculates setup, first-real-MP4, approval, publication, and repeat-generation milestones locally from SQLite and files on disk. A video counts only when a non-simulated `.mp4` with an MP4 container signature still exists.
+The dashboard computes setup, first-real-MP4, approval, publication, and repeat-generation milestones from local SQLite and files. A video counts only when a non-simulated `.mp4` with an MP4 signature still exists.
 
-Anonymous milestone reporting is disabled by default and has no built-in collector. It activates only when you explicitly set both telemetry variables. The allowlisted payload contains the milestone name and time, Lumen version, OS family, Node major version, and a random installation ID. It never includes credentials, channel data, prompts, topics, titles, filenames, or video contents.
+Anonymous milestone reporting is off by default. It turns on only if you set both telemetry variables. The payload is milestone name and time, Lumen version, OS family, Node major, and a random install ID. It never includes keys, channel data, prompts, titles, or files.
 
-## Automation Schedule
+## Automation and publishing
 
-```mermaid
-gantt
-    title Daily Pipeline
-    dateFormat HH:mm
-    axisFormat %H:%M
+After `npm start`:
 
-    section Content
-    Generate content (strategy + script + thumbnail + SEO) :06:00, 2h
+- Daily content generation around 06:00 (uses the active strategy cadence when one exists)
+- Publish queue **every 15 minutes** (not at the exact minute you typed)
+- Analytics around 09:00
+- Optimization around 22:00
+- Weekly strategy review on Sundays
 
-    section Publishing
-    Process publishing queue :crit, 08:00, 14h
+Times are interpreted with the channel timezone. Stored timestamps are UTC.
 
-    section Analytics
-    Collect analytics     :09:00, 1h
-    Run optimizations     :22:00, 1h
-```
+Default privacy is `private` (`DEFAULT_PRIVACY_STATUS`). A successful upload may still be invisible on the public channel until you change privacy in YouTube Studio.
 
-The scheduler runs automatically after `npm start`. Content generation at 06:00, publishing queue processed every 15 minutes, analytics at 09:00, optimization at 22:00. Weekly strategy reviews run on Sundays.
-
-When an active channel strategy exists, the 06:00 generation check uses its cadence and launches an autonomous research-and-production run when the content buffer needs work. Without an active strategy, the original topic-selection flow remains in place.
-
-Daily analytics collection backfills each real publication's 24-hour and 7-day evidence windows. Recommendations require at least two real measurements, and format or style comparisons require at least two videos in each compared group.
+YouTube only accepts `publishAt` when that timestamp is still in the future. The publisher runs after your slot is due, so a past `publishAt` can fail with **invalid scheduled publishing time**. Retry on the next 15-minute tick, or upload immediately without a past schedule. If a video is already on YouTube, Studio is the source of truth.
 
 ## API
 
+Mutating routes need header `x-api-key` when `API_KEY` is set in `.env`.
+
 ```bash
-# health check
+# health
 curl http://localhost:3456/health
 
-# queue a video-generation job (send x-api-key if API_KEY is set in .env)
+# generate (topic optional)
 curl -X POST http://localhost:3456/generate \
   -H "Content-Type: application/json" \
   -H "x-api-key: $API_KEY" \
-  -d '{"topic": "Top 10 Life Hacks", "style": "list"}'
+  -d '{"topic":"Top 10 Life Hacks","style":"list","length":"medium","language":"en"}'
 
-# inspect the returned background job
 curl http://localhost:3456/api/jobs/:jobId
+curl http://localhost:3456/api/dashboard
+curl http://localhost:3456/schedule
+curl http://localhost:3456/analytics
 
-# inspect the latest production-readiness evidence
+# readiness
 curl http://localhost:3456/api/readiness
-
-# run harmless live probes; add {"includePaidMedia":true} only to test paid image generation
 curl -X POST http://localhost:3456/api/readiness/run \
   -H "Content-Type: application/json" \
   -H "x-api-key: $API_KEY" \
   -d '{"includePaidMedia":false}'
 
-# save a channel strategy
+# YouTube (dashboard equivalents)
+curl http://localhost:3456/api/youtube
+curl -X PUT http://localhost:3456/api/youtube \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{"clientId":"...apps.googleusercontent.com","clientSecret":"..."}'
+curl -X POST http://localhost:3456/api/youtube/connect \
+  -H "x-api-key: $API_KEY"
+
+# speaking style
+curl http://localhost:3456/api/speaking-style
+curl -X POST http://localhost:3456/api/speaking-style/learn \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{"urls":["https://www.youtube.com/watch?v=XXXXXXXXXXX"],"language":"en"}'
+curl -X PUT http://localhost:3456/api/speaking-style \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{"enabled":true}'
+
+# operator
 curl -X PUT http://localhost:3456/api/operator/strategy \
   -H "Content-Type: application/json" \
   -H "x-api-key: $API_KEY" \
   -d '{"objective":"Own practical AI automation for small teams","audience":"Small business operators","contentPillars":["AI workflows","Automation playbooks"],"cadencePerWeek":2,"videosPerRun":2,"defaultFormat":"tutorial","defaultLength":"medium","status":"draft"}'
-
-# activate the saved strategy and start a background operator run
 curl -X POST http://localhost:3456/api/operator/start \
   -H "Content-Type: application/json" \
   -H "x-api-key: $API_KEY" \
   -d '{}'
 
-# view schedule
-curl http://localhost:3456/schedule
-
-# get analytics
-curl http://localhost:3456/analytics
-
-# approve an evidence-backed learning for future autonomous plans
-curl -X POST http://localhost:3456/api/learning/recommendations/:recommendationId/approve \
-  -H "x-api-key: $API_KEY"
-
-# inspect, edit, and approve content before scheduling
+# review
 curl http://localhost:3456/api/content/:contentId
 curl -X POST http://localhost:3456/api/content/:contentId/approve \
   -H "Content-Type: application/json" \
@@ -304,34 +355,78 @@ curl -X POST http://localhost:3456/api/content/:contentId/approve \
   -d '{"privacyStatus":"private","factChecked":true,"rightsConfirmed":true}'
 ```
 
-## Production Pipeline
+## Production pipeline
 
 ```mermaid
 flowchart LR
-    subgraph TTS["Audio Generation"]
+    subgraph TTS["Audio"]
         direction TB
-        EL[ElevenLabs v3] -.->|fallback| OA[OpenAI TTS]
-        OA -.->|fallback| SIM1[Simulation]
+        FO[Fonada Klone / V1] -.->|fallback| GE[Gemini TTS]
+        GE -.->|fallback| OA[OpenAI TTS]
+        OA -.->|fallback| EL[ElevenLabs]
+        EL -.->|fallback| SIM1[Silent / simulated]
     end
 
-    subgraph IMG["Image Generation"]
+    subgraph IMG["Images"]
         direction TB
-        GPT[GPT Image 2] -.->|fallback| SIM2[Simulation]
+        GI[Gemini / GPT Image] -.->|fallback| GR[Gradient slides]
     end
 
-    subgraph VID["Video Assembly"]
+    subgraph VID["Video"]
         direction TB
-        WAN[Wan 2.7 I2V] -.->|fallback| PW[Playwright Slideshow]
-        PW -.->|fallback| SIM3[Simulation]
+        WAN[Replicate I2V] -.->|fallback| SS[FFmpeg slideshow]
+        SS -.->|fallback| SIM3[Simulation]
     end
 
-    TTS --> MIX[FFmpeg Mux]
+    TTS --> MIX[FFmpeg mux]
     IMG --> VID
     VID --> MIX
-    MIX --> OUT[Final Video]
+    MIX --> OUT[Final MP4]
 ```
 
-Each stage has graceful fallbacks. If a paid API key isn't configured, the system simulates that step so the rest of the pipeline still runs.
+If a paid key is missing, that stage degrades and the rest of the pipeline still runs. Startup prints a capability check (script, images, TTS, FFmpeg, YouTube).
+
+## Project structure
+
+```
+youtube-automation-agent/
+├── agents/           # one file per pipeline agent
+├── config/           # credentials.example.json; local credentials.json + tokens.json are gitignored
+├── dashboard/        # operator console (HTML/CSS/JS)
+├── docs/             # Fonada and YouTube OAuth setup guides
+├── database/         # SQLite schema and access
+├── data/             # generated media and DB (gitignored except .gitkeep)
+├── schedules/        # cron automation
+├── scripts/          # Fonada TTS/ASR tests, growth snapshots
+├── utils/            # TTS, ASR, FFmpeg, speaking style, credentials
+├── .env.example      # copy to .env
+├── .github/          # CI
+└── index.js          # Express server + agent init
+```
+
+Do not commit `.env`, `config/credentials.json`, `config/tokens.json`, `*.db`, or files under `data/videos`, `data/scripts`, `data/audio`, `data/captions`. Those are operator-specific.
+
+## Troubleshooting
+
+| Problem | Fix |
+| --- | --- |
+| `Missing credentials for: an AI provider` | Set any text key in `.env` or run `npm run credentials:setup` |
+| `'ffmpeg' is not recognized` / no MP4 | `npm install`, or install FFmpeg and set `FFMPEG_PATH` |
+| Video marked `simulated` | Read the startup capability check; a key or FFmpeg is missing |
+| Dashboard **connection refused** | Run `npm start` in this folder; open `http://localhost:3456` |
+| `403 access_denied` on Google sign-in | Add your Gmail as an OAuth **test user** |
+| Speaking style stuck on Learning | Check `yt-dlp`, network, and Fonada key; a stuck job times out and can be retried |
+| ASR text is English in Hindi script | Set ASR language to the language actually spoken |
+| Next scripts ignore speaking style | Confirm status is **Learned**, the toggle is on, and the job used the AI script writer |
+| Publish queue runs but YouTube says **invalid scheduled publishing time** | The slot is already past; YouTube rejects `publishAt` in the past. Wait for the next 15-minute tick or upload without a past schedule |
+| Uploaded but not on the channel | Default privacy is **private** — check YouTube Studio |
+| Thumbnail / captions fail after upload | Channel lacks custom thumbnail or caption scopes; the video can still be live |
+| YouTube quota exceeded | Google Cloud quotas; post less often |
+| Generation failed | Keys, credits, and `logs/` |
+
+```bash
+NODE_ENV=development DEBUG_MODE=true npm start
+```
 
 ## Extending
 
@@ -361,95 +456,57 @@ class ClaudeAIService {
 ```javascript
 // agents/content-strategy-agent.js
 const contentTypes = {
-  'podcast': {
+  podcast: {
     duration: '10-15 minutes',
     style: 'conversational',
     thumbnail: 'podcast-style'
-  },
+  }
 };
 ```
 
-## Project Structure
+## More tools by darkzOGx
 
-```
-youtube-automation-agent/
-├── agents/          # one file per agent
-├── config/          # credentials, example configs
-├── database/        # SQLite schema and access layer
-├── data/            # generated content and assets
-├── schedules/       # cron-based automation
-├── utils/           # AI services, autonomous operator, logging, credential management
-├── .github/         # CI workflow (lint + tests on every push/PR)
-└── index.js         # Express server + agent initialization
-```
-
-## Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| `Missing credentials for: an AI provider` | Configure any one provider with `npm run credentials:setup` — OpenAI is not required |
-| `'ffmpeg' is not recognized` / no .mp4 produced | Run `npm install` (fetches the bundled binary), or install FFmpeg and set `FFMPEG_PATH` |
-| Video marked `simulated`, nothing uploads | Check the ✗ lines in the startup capability check — a key or FFmpeg is missing |
-| "Processing publish queue" but nothing publishes | The queue log now shows what's waiting; content publishes at its scheduled time (default: next day 2 PM) |
-| YouTube API quota exceeded | Check quotas in Google Cloud Console; reduce posting frequency |
-| Content generation failed | Verify API keys and credits; check `logs/` |
-| Publishing failed | Re-authenticate YouTube OAuth tokens; check video format |
-
-Enable debug logging:
-
-```bash
-NODE_ENV=development DEBUG_MODE=true npm start
-```
-
-## More Tools by darkzOGx
-
-If this was useful, check out:
-
-- [darkzloop](https://github.com/darkzOGx/darkzloop): terminal agent runner that turns any LLM into a disciplined software engineer (FSM control, model-agnostic, BYO auth)
-- [darkzBOX](https://github.com/darkzOGx/darkzBOX): open-source Instantly.ai clone with smart automated email replies
-- [open-sales-researcher](https://github.com/darkzOGx/open-sales-researcher): autonomous B2B company research. Works with Claude Code, Cursor, Copilot.
-- [darkzseo](https://github.com/darkzOGx/darkzseo): SEO tooling
+- [darkzloop](https://github.com/darkzOGx/darkzloop) — terminal agent runner
+- [darkzBOX](https://github.com/darkzOGx/darkzBOX) — open-source Instantly.ai-style email
+- [open-sales-researcher](https://github.com/darkzOGx/open-sales-researcher) — B2B research for Claude Code, Cursor, Copilot
+- [darkzseo](https://github.com/darkzOGx/darkzseo) — SEO tooling
 
 ## Built by
 
-[@darkzOGx](https://github.com/darkzOGx), a solo builder shipping AI automation and developer tools. Find me on [X](https://x.com/darkzOGx) and [laderalabs.io](https://laderalabs.io).
+[@darkzOGx](https://github.com/darkzOGx). [X](https://x.com/darkzOGx) · [laderalabs.io](https://laderalabs.io)
 
-If Lumen saves you time, a star helps it reach more developers.
+If Lumen saves you time, a star helps it reach more operators.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for ground rules (short version: one focused concern per PR, no lockfile churn, lint + tests must pass). For questions and setup help, use [Discussions](https://github.com/darkzOGx/youtube-automation-agent/discussions) — Issues is for bugs.
-
-1. Fork the repo
-2. Create a feature branch
-3. Make changes and add tests
-4. Submit a PR
+See [CONTRIBUTING.md](CONTRIBUTING.md). One focused concern per PR, no lockfile churn, lint + tests must pass. Questions: [Discussions](https://github.com/darkzOGx/youtube-automation-agent/discussions). Issues are for bugs.
 
 ```bash
 git clone <your-fork>
 cd youtube-automation-agent
 npm install
-npm run lint   # must pass — CI runs this on every PR
+npm run lint
 npm test
 ```
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- [OpenAI](https://openai.com/) — GPT-5.6 Sol, GPT Image 2, GPT-4o-mini-tts
+- [OpenAI](https://openai.com/) — GPT-5.6, GPT Image, TTS
 - [OpenRouter](https://openrouter.ai/) — unified multi-model API
-- [Google](https://ai.google.dev/) — Gemini 3.7 Flash, Gemini 3.1 Flash Image, Gemini 3.1 Flash TTS
+- [Google](https://ai.google.dev/) — Gemini text, image, TTS
 - [Google Cloud](https://console.cloud.google.com/) — YouTube Data API
-- [Moonshot AI](https://www.moonshot.ai/) — Kimi K3
-- [Xiaomi](https://mimo.mi.com/) — MiMo V2.5 Pro
-- [Zhipu AI](https://z.ai/) — GLM-5.3
-- [ElevenLabs](https://elevenlabs.io/) — Eleven v3 TTS
-- [Replicate](https://replicate.com/) — Wan 2.7 video generation
-- [ConstructionBids.ai](https://constructionbids.ai) - AI scans every federal, state & local public works bid and matches you to contracts you'll win.
+- [Fonada](https://fonada.ai/) — multilingual TTS and ASR
+- [Moonshot AI](https://www.moonshot.ai/) — Kimi
+- [Xiaomi](https://mimo.mi.com/) — MiMo
+- [Zhipu AI](https://z.ai/) — GLM
+- [ElevenLabs](https://elevenlabs.io/) — TTS fallback
+- [Replicate](https://replicate.com/) — optional video generation
+- [ConstructionBids.ai](https://constructionbids.ai) — public-works bid matching
 
 ---
 
-> This tool is for legitimate content creation. Comply with [YouTube's Terms of Service](https://www.youtube.com/t/terms) and Community Guidelines.
+This tool is for legitimate content creation. Follow [YouTube’s Terms of Service](https://www.youtube.com/t/terms) and Community Guidelines. Speaking style learns writing patterns from public videos; it does not download or republish those videos, and it does not clone a voice.

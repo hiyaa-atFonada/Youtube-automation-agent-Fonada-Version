@@ -261,6 +261,7 @@ class Database {
         target_audience TEXT,
         brand_voice TEXT,
         default_style TEXT,
+        default_language TEXT DEFAULT 'hi',
         call_to_action TEXT,
         banned_topics TEXT,
         visual_style TEXT,
@@ -289,6 +290,7 @@ class Database {
         videos_per_run INTEGER DEFAULT 1,
         default_format TEXT DEFAULT 'explainer',
         default_length TEXT DEFAULT 'medium',
+        default_language TEXT DEFAULT 'hi',
         success_metric TEXT,
         constraints TEXT,
         status TEXT DEFAULT 'draft',
@@ -337,6 +339,19 @@ class Database {
         value TEXT NOT NULL,
         description TEXT,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE TABLE IF NOT EXISTS speaking_style_sources (
+        id TEXT PRIMARY KEY,
+        video_id TEXT,
+        url TEXT NOT NULL,
+        title TEXT,
+        language TEXT,
+        transcript TEXT,
+        excerpt TEXT,
+        duration_s REAL,
+        credits_used INTEGER,
+        audio_path TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`
     ];
 
@@ -344,8 +359,30 @@ class Database {
       await this.executeQuery(tableQuery);
     }
 
+    await this.ensureColumn('channel_profiles', 'default_language', "TEXT DEFAULT 'hi'");
+    await this.ensureColumn('channel_profiles', 'default_voice', 'TEXT');
+    await this.ensureColumn('channel_strategies', 'default_language', "TEXT DEFAULT 'hi'");
+
     // Insert default settings
     await this.insertDefaultSettings();
+    await this.migrateIndiaTimezone();
+  }
+
+  async migrateIndiaTimezone() {
+    await this.executeQuery(
+      `UPDATE settings SET value = 'Asia/Kolkata', updated_at = datetime('now')
+       WHERE key = 'channel_timezone' AND LOWER(value) IN ('america/chicago', 'indian', 'india', 'ist')`
+    );
+    await this.executeQuery(
+      `UPDATE channel_profiles SET timezone = 'Asia/Kolkata', updated_at = datetime('now')
+       WHERE timezone IS NULL OR TRIM(timezone) = '' OR LOWER(timezone) IN ('america/chicago', 'indian', 'india', 'ist')`
+    );
+  }
+
+  async ensureColumn(table, column, definition) {
+    const columns = await this.getAllRows(`PRAGMA table_info(${table})`);
+    if (columns.some(row => row.name === column)) return;
+    await this.executeQuery(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
   async insertDefaultSettings() {
@@ -360,7 +397,7 @@ class Database {
       ['notification_enabled', 'true', 'Enable system notifications'],
       ['approval_required', 'true', 'Require human approval before scheduling generated content'],
       ['automation_paused', 'false', 'Pause generation and publishing automation'],
-      ['channel_timezone', 'America/Chicago', 'Timezone used to present channel schedules'],
+      ['channel_timezone', 'Asia/Kolkata', 'Timezone used to present channel schedules'],
       ['max_daily_posts', '1', 'Maximum posts per day'],
       ['content_buffer_days', '3', 'Days of content to keep in buffer']
     ];
@@ -375,18 +412,19 @@ class Database {
     await this.executeQuery(
       `INSERT OR IGNORE INTO channel_profiles (
         id, channel_name, goal, target_audience, brand_voice, default_style,
-        call_to_action, banned_topics, visual_style, timezone
-      ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        default_language, call_to_action, banned_topics, visual_style, timezone
+      ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         process.env.CHANNEL_NAME || 'My YouTube Channel',
         'Grow a trusted, useful YouTube channel',
         process.env.TARGET_AUDIENCE || 'General audience',
         'Clear, credible, and engaging',
         'explainer',
+        'hi',
         'Subscribe for more useful videos.',
         '[]',
         'Clean, high-contrast, and readable',
-        process.env.CHANNEL_TIMEZONE || 'America/Chicago'
+        process.env.CHANNEL_TIMEZONE || 'Asia/Kolkata'
       ]
     );
   }
@@ -713,18 +751,20 @@ class Database {
     await this.executeQuery(
       `INSERT OR REPLACE INTO channel_profiles (
         id, channel_name, goal, target_audience, brand_voice, default_style,
-        call_to_action, banned_topics, visual_style, timezone, created_at, updated_at
-      ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))`,
+        default_language, default_voice, call_to_action, banned_topics, visual_style, timezone, created_at, updated_at
+      ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))`,
       [
         profile.channelName ?? current.channel_name ?? '',
         profile.goal ?? current.goal ?? '',
         profile.targetAudience ?? current.target_audience ?? '',
         profile.brandVoice ?? current.brand_voice ?? '',
         profile.defaultStyle ?? current.default_style ?? 'explainer',
+        profile.defaultLanguage ?? current.default_language ?? 'hi',
+        profile.defaultVoice ?? current.default_voice ?? null,
         profile.callToAction ?? current.call_to_action ?? '',
         JSON.stringify(profile.bannedTopics ?? current.bannedTopics ?? []),
         profile.visualStyle ?? current.visual_style ?? '',
-        profile.timezone ?? current.timezone ?? 'America/Chicago',
+        profile.timezone ?? current.timezone ?? 'Asia/Kolkata',
         current.created_at || null
       ]
     );
@@ -774,14 +814,15 @@ class Database {
     await this.executeQuery(
       `INSERT INTO channel_strategies (
         id, objective, audience, value_proposition, content_pillars, cadence_per_week,
-        videos_per_run, default_format, default_length, success_metric, constraints,
+        videos_per_run, default_format, default_length, default_language, success_metric, constraints,
         status, created_at, updated_at
-      ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
+      ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
       ON CONFLICT(id) DO UPDATE SET
         objective = excluded.objective, audience = excluded.audience,
         value_proposition = excluded.value_proposition, content_pillars = excluded.content_pillars,
         cadence_per_week = excluded.cadence_per_week, videos_per_run = excluded.videos_per_run,
         default_format = excluded.default_format, default_length = excluded.default_length,
+        default_language = excluded.default_language,
         success_metric = excluded.success_metric, constraints = excluded.constraints,
         status = excluded.status, updated_at = datetime('now')`,
       [
@@ -793,6 +834,7 @@ class Database {
         strategy.videosPerRun ?? current.videos_per_run ?? 1,
         strategy.defaultFormat ?? current.default_format ?? 'explainer',
         strategy.defaultLength ?? current.default_length ?? 'medium',
+        strategy.defaultLanguage ?? current.default_language ?? 'hi',
         strategy.successMetric ?? current.success_metric ?? '',
         strategy.constraints ?? current.constraints ?? '',
         strategy.status ?? current.status ?? 'draft',
@@ -1259,6 +1301,51 @@ class Database {
       [key]
     );
     return row ? row.value : null;
+  }
+
+  async saveSpeakingStyleSource(source) {
+    const id = this.generateId('style');
+    await this.executeQuery(
+      `INSERT INTO speaking_style_sources (
+        id, video_id, url, title, language, transcript, excerpt, duration_s, credits_used, audio_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        source.videoId || null,
+        source.url,
+        source.title || null,
+        source.language || null,
+        source.transcript || '',
+        source.excerpt || null,
+        source.durationSeconds || 0,
+        source.creditsUsed || 0,
+        source.audioPath || null
+      ]
+    );
+    return this.getRow('SELECT * FROM speaking_style_sources WHERE id = ?', [id]);
+  }
+
+  async listSpeakingStyleSources(limit = 5) {
+    return this.getAllRows(
+      'SELECT * FROM speaking_style_sources ORDER BY created_at DESC LIMIT ?',
+      [limit]
+    );
+  }
+
+  async saveSpeakingStyleProfile(profile) {
+    await this.setSetting('speaking_style_profile', JSON.stringify(profile || {}), 'Learned speaking style from Fonada ASR');
+    await this.setSetting('speaking_style_enabled', profile?.enabled === false ? 'false' : 'true', 'Use learned speaking style in script writing');
+    return this.getSpeakingStyleProfile();
+  }
+
+  async getSpeakingStyleProfile() {
+    const raw = await this.getSetting('speaking_style_profile');
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      return null;
+    }
   }
 
   async setSetting(key, value, description = null) {

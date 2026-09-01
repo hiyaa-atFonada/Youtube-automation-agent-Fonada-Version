@@ -73,7 +73,7 @@ class ProductionReadinessService {
       checks.push(await this.executeCheck('image_provider', 'Image provider', false, () => this.probeImage(tempDir, Boolean(options.includePaidMedia))));
       checks.push(await this.executeCheck('voice_narration', 'Voice narration', true, () => this.probeNarration(tempDir)));
       checks.push(await this.executeCheck('video_assembly', 'Audio/video assembly', true, () => this.probeVideoAssembly(tempDir)));
-      checks.push(await this.executeCheck('youtube_access', 'YouTube channel access', true, () => this.probeYouTube()));
+      checks.push(await this.executeCheck('youtube_access', 'YouTube channel access', false, () => this.probeYouTube()));
       checks.push(await this.executeCheck('upload_metadata', 'Upload metadata', true, () => this.probeMetadata()));
 
       const blockingFailures = checks.filter(check => check.blocking && check.status === 'failed');
@@ -186,6 +186,13 @@ class ProductionReadinessService {
 
   async probeYouTube() {
     if (this.probes.youtube) return this.probes.youtube();
+    if (!this.credentialManager.hasYouTubeUpload?.()) {
+      return {
+        status: 'skipped',
+        message: 'YouTube is not connected yet. Generation can proceed; connect YouTube before uploading.',
+        remediation: this.remediationFor('youtube_access')
+      };
+    }
     const youtube = this.credentialManager.getYouTubeClient();
     const response = await youtube.channels.list({ part: 'snippet,status', mine: true, maxResults: 1 });
     const channel = response.data?.items?.[0];
@@ -233,7 +240,7 @@ class ProductionReadinessService {
     const messages = {
       text_provider: 'Run npm run walkthrough, verify the selected model, and confirm provider credits or quota.',
       image_provider: 'Verify paid image access or rely on the built-in gradient visual fallback.',
-      voice_narration: 'Configure OpenAI, Gemini TTS, ElevenLabs with a voice ID, or Azure Speech, then rerun.',
+      voice_narration: 'Configure Fonada Labs (FONADA_API_KEY), Gemini TTS, or OpenAI, then rerun.',
       video_assembly: 'Run npm install to restore ffmpeg-static, or configure FFMPEG_PATH to a working binary.',
       youtube_access: 'Reconnect YouTube in npm run walkthrough and ensure the Google account owns a channel.',
       upload_metadata: 'Edit the queued title, description, category, language, and tags before publishing.'

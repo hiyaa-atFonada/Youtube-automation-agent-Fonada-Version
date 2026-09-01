@@ -22,14 +22,29 @@ class PublishingSchedulingAgent {
   }
 
   async setupYouTubeAPI() {
+    if (!this.credentials.hasYouTubeUpload?.()) {
+      this.logger.warn('YouTube is not connected — videos will be produced locally. Connect it before uploading.');
+      return;
+    }
     try {
-      const auth = this.credentials.getYouTubeAuth();
-      this.youtube = google.youtube({ version: 'v3', auth });
+      this.youtube = this.ensureYouTubeClient();
       this.logger.info('YouTube API initialized');
     } catch (error) {
-      this.logger.error('Failed to initialize YouTube API:', error);
+      this.logger.warn(`YouTube API is unavailable until upload: ${error.message}`);
+    }
+  }
+
+  ensureYouTubeClient() {
+    if (this.youtube) return this.youtube;
+    if (!this.credentials.hasYouTubeUpload?.()) {
+      const error = new Error('YouTube is not connected. Generate and review videos locally, then run npm run walkthrough to connect YouTube before uploading.');
+      error.status = 503;
+      error.code = 'YOUTUBE_NOT_CONNECTED';
       throw error;
     }
+    const auth = this.credentials.getYouTubeAuth();
+    this.youtube = google.youtube({ version: 'v3', auth });
+    return this.youtube;
   }
 
   async loadPublishQueue() {
@@ -128,6 +143,7 @@ class PublishingSchedulingAgent {
   }
 
   async uploadToYouTube(scheduleEntry) {
+    this.ensureYouTubeClient();
     const { metadata } = scheduleEntry;
     const validation = assertValidYouTubeMetadata(metadata.seo);
     if (validation.warnings.length) {
@@ -171,7 +187,7 @@ class PublishingSchedulingAgent {
     
     // Upload captions
     if (metadata.captions && metadata.captions.path) {
-      await this.uploadCaptions(videoId, metadata.captions.path);
+      await this.uploadCaptions(videoId, metadata.captions);
     }
     
     return videoUpload.data;
@@ -206,8 +222,10 @@ class PublishingSchedulingAgent {
     }
   }
 
-  async uploadCaptions(videoId, captionsPath) {
+  async uploadCaptions(videoId, captions) {
     try {
+      const captionsPath = typeof captions === 'string' ? captions : captions?.path;
+      const language = (typeof captions === 'object' && captions?.language) || 'en';
       const captionsContent = await fs.readFile(captionsPath, 'utf8');
       
       await this.youtube.captions.insert({
@@ -215,8 +233,8 @@ class PublishingSchedulingAgent {
         requestBody: {
           snippet: {
             videoId: videoId,
-            language: 'en',
-            name: 'English Captions',
+            language,
+            name: `${language} Captions`,
             isDraft: false
           }
         },
